@@ -65,5 +65,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # v1.2.3-beta.1, v1.2.3-rc.1 ... are pre-releases; v1.2.3 is a release.
-          $pre = if ($env:GITHUB_REF_NAME -match '-') { @('--prerelease') } else { @() }
-          gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes @pre
+          if ($env:GITHUB_REF_NAME -match '-') {
+            gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes --prerelease
+          } else {
+            gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes
+          }
