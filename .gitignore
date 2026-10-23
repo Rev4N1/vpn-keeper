@@ -1,0 +1,4 @@
+/obj/
+/dist/
+*.zip
+vpn-keeper.conf

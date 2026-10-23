@@ -1,0 +1,26 @@
+# vpn-keeper.conf - copy next to vpn-keeper.exe and fill in the first block.
+# No passwords here: those live in Windows Credential Manager (see README).
+
+# ---- required: your VPN ----
+profile   = VPN Example                 # the Configuration name selected in Connect Tunnel
+check_url = http://10.20.30.40/         # any URL that only answers through the VPN
+allow     = 10.20.30.0/24 *.corp.example   # what the proxy may reach (and the PAC sends to it):
+                                        # IPv4 CIDRs, single IPs, host names, or *.domain
+
+# ---- optional: the values shown are the defaults ----
+# client_exe     = C:\Program Files\SonicWall\Modern Connect Tunnel\SnwlConnect.exe
+# check_interval = 30                   # seconds between checks while connected
+# failed_checks  = 3                    # failed checks in a row before reconnecting
+
+# Names of the Credential Manager entries:
+# credential     = vpn-keeper:vpn       # user = VPN user, password = VPN password
+# otp_credential = vpn-keeper:otp       # password = the Base32 OTP seed
+# otp_digits     = 6
+# otp_period     = 30
+
+# listen  = 0.0.0.0:8080
+# Who may use the proxy. The Windows Firewall rule is the main gate; this is a
+# second one. Narrow it to your WireGuard subnet and LAN, e.g. 10.7.0.0/24 192.168.1.0/24 127.0.0.1/32
+# clients = 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.1/32
+
+# keep_awake = yes                      # block idle sleep while the agent runs

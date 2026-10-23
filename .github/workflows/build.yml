@@ -1,0 +1,66 @@
+name: build
+
+# Every push and pull request: compile, run the self-test (including a full
+# login against the fake Connect Tunnel), and keep the build as an artifact.
+# Pushes to main also refresh the "latest" pre-release; a v* tag makes a
+# proper release.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git describe needs the tags
+
+      - name: Build and self-test
+        shell: pwsh
+        run: ./build.ps1 -Test
+
+      - name: Package
+        id: pkg
+        shell: pwsh
+        run: |
+          $v = (Get-Item dist/vpn-keeper.exe).VersionInfo.ProductVersion
+          $zip = "vpn-keeper-$v.zip"
+          Compress-Archive -Path dist/* -DestinationPath $zip
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpn-keeper-${{ steps.pkg.outputs.version }}
+          path: dist/
+          retention-days: 90
+
+      - name: Refresh the "latest" pre-release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create latest "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe `
+            --prerelease --target $env:GITHUB_SHA --title "latest main (${{ steps.pkg.outputs.version }})" `
+            --notes "Built from $env:GITHUB_SHA. Replaced on every push to main."
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes
