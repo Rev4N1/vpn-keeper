@@ -85,7 +85,7 @@ Every push runs [CI](.github/workflows/build.yml) on Windows: it compiles,
 runs the self-test (including a full login, and a forced re-login, against a
 fake Connect Tunnel shaped like the real one), and keeps the result as a
 build artifact. Pushes to `main` also update the **latest** pre-release;
-tagging `v1.2.3` makes a release.
+tagging `v1.2.3` makes a release, and `v1.2.3-beta.1` a pre-release.
 
 Building locally needs only Windows (the C# compiler that ships with .NET
 Framework 4.8):
