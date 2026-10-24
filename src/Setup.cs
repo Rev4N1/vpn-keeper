@@ -106,13 +106,8 @@ namespace VpnKeeper
 
             Lan lan = Lan.Find();
             if (lan != null)
-            {
-                Console.WriteLine("this PC: " + lan.Address + " on " + lan.Subnet + " via " + lan.Gateway
+                Console.WriteLine("this PC: " + lan.Address + " on " + lan.Subnet
                     + "  ->  http://" + lan.Address + ":" + cfg.Port + "/health");
-                foreach (string c in cfg.Clients)
-                    if (Rules.IsCidr(c) && lan.LosesRepliesTo(c))
-                        Console.WriteLine("  [warn] replies to " + c + " would go into the VPN; run (as admin):  " + lan.RouteCommand(c));
-            }
             return 0;
         }
 
@@ -125,6 +120,19 @@ namespace VpnKeeper
             Credentials.Delete(Credentials.Vpn);
             Credentials.Delete(Credentials.Otp);
             Console.WriteLine("saved VPN password and TOTP seed removed");
+
+            // The firewall rule needs admin to remove, same as to create.
+            Console.Write("Remove the firewall rule too? A Windows admin prompt will appear. [Y/n]: ");
+            string a = Console.ReadLine();
+            if (a == null || a.Trim().Length == 0 || a.Trim().ToLowerInvariant().StartsWith("y"))
+            {
+                int r = Admin.ElevateRemove();
+                Console.WriteLine(r == 0 ? "  firewall rule removed" :
+                    r < 0 ? "  admin prompt declined; remove it by hand:  Remove-NetFirewallRule -DisplayName " + Admin.FirewallRule
+                          : "  could not remove it (see log); by hand:  Remove-NetFirewallRule -DisplayName " + Admin.FirewallRule);
+            }
+            else Console.WriteLine("  left the firewall rule; remove it by hand:  Remove-NetFirewallRule -DisplayName " + Admin.FirewallRule);
+
             Console.WriteLine("left in place: " + Config.InstallDir + " (delete it by hand to remove the program and its settings)");
             Console.WriteLine("Connect Tunnel itself is untouched.");
             return 0;
@@ -243,8 +251,7 @@ namespace VpnKeeper
         static void ApplyAdminSteps(Config cfg, Lan lan)
         {
             AdminPlan plan = Admin.Plan(cfg, lan);
-            Console.WriteLine("One admin step is left: a firewall rule for the proxy"
-                + (plan.Routes.Count > 0 ? ", and a route for your remote clients." : "."));
+            Console.WriteLine("One admin step is left: a firewall rule so your clients can reach the proxy.");
             Console.Write("Apply it now? A Windows admin prompt will appear. [Y/n]: ");
             string a = Console.ReadLine();
             bool yes = a == null || a.Trim().Length == 0 || a.Trim().ToLowerInvariant().StartsWith("y");
@@ -260,11 +267,9 @@ namespace VpnKeeper
 
         static void PrintManualSteps(AdminPlan plan)
         {
-            Console.WriteLine("\nRun these in an administrator PowerShell:");
+            Console.WriteLine("\nRun this in an administrator PowerShell:");
             Console.WriteLine("  New-NetFirewallRule -DisplayName '" + Admin.FirewallRule + "' -Direction Inbound -Protocol TCP -LocalPort "
                 + plan.Port + " -RemoteAddress " + plan.RemoteIp + " -Action Allow -Profile Any");
-            foreach (string[] r in plan.Routes)
-                Console.WriteLine("  route -p add " + r[0] + " mask " + r[1] + " " + r[2] + " metric 1");
         }
 
         static void PrintProxyUrl(Config cfg, Lan lan)

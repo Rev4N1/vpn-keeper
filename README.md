@@ -43,9 +43,8 @@ Manager. They are never in a file, the log, or this repository.
    the sites to share, and your VPN password and one-time-code seed (the Base32
    text from "can't scan the QR code?"). It then installs itself, starts, and
    **offers to apply the one admin step for you** through a single Windows
-   admin prompt: the firewall rule for the proxy port, and, if needed, a route
-   so replies to your other machines don't disappear into the VPN. (It prints
-   the commands too, to run by hand if you prefer.)
+   admin prompt: the firewall rule that lets your other machines reach the
+   proxy port. (It prints the command too, to run by hand if you prefer.)
 
 That's it. Check it any time with `vpn-keeper status`.
 

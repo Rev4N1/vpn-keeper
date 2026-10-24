@@ -83,14 +83,20 @@ gets 403. `/proxy.pac` is generated from `allow` and points at the address the
 request arrived on, so browsers send exactly the shared sites to the proxy and
 everything else direct. The listener restarts itself if it ever fails.
 
-## The route gotcha
+## The firewall rule
 
-A company VPN often pushes a broad route such as `10.0.0.0/8`. If that covers
-the subnet your proxy clients come from (a home VPN's subnet, say), this PC
-would send its replies into the company tunnel instead of back to them.
-`setup` and `status` detect this and print the one-line `route -p add …` that
-fixes it (a more specific route via the home router). Choosing a client subnet
-the VPN doesn't cover avoids it entirely.
+The one thing a plain proxy needs that admin rights gate is an inbound
+firewall rule for its port, scoped to the client subnets. `setup` creates it
+(and `uninstall` removes it) through a single UAC prompt; because the admin
+who answers that prompt may be a different account from the signed-in user,
+the rule's values are passed to the elevated step on the command line rather
+than re-read from the user's config.
+
+(If a client whose subnet the VPN has also claimed — e.g. a `10.x` home-VPN
+subnet under a company `10.0.0.0/8` route — still can't reach the proxy after
+the firewall rule, add a route for that subnet via the LAN gateway:
+`route -p add <net> mask <mask> <gateway> metric 1`. In practice the home
+router's return path usually makes this unnecessary.)
 
 ## Tests
 

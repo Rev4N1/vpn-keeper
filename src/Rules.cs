@@ -91,23 +91,11 @@ namespace VpnKeeper
             return sb.ToString();
         }
 
-        // "10.7.0.0/24" -> network 10.7.0.0, mask 255.255.255.0, first host 10.7.0.1.
+        // True for "10.20.30.0/24" or a bare IPv4 address, false for a host name.
         public static bool IsCidr(string e)
         {
             uint net, mask;
             return TryCidr(e, out net, out mask);
-        }
-
-        public static bool ParseCidr(string e, out string network, out string mask, out IPAddress firstHost)
-        {
-            uint n, m;
-            network = mask = null;
-            firstHost = null;
-            if (!TryCidr(e, out n, out m)) return false;
-            network = FromUint(n);
-            mask = FromUint(m);
-            firstHost = IPAddress.Parse(FromUint(m == uint.MaxValue ? n : n + 1));
-            return true;
         }
 
         static bool TryCidr(string e, out uint net, out uint mask)

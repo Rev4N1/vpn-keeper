@@ -26,7 +26,7 @@ namespace VpnKeeper
             Section("status captions", Captions);
             Section("allow lists and PAC", RulesTests);
             Section("request parsing", Parsing);
-            Section("admin routes", AdminRoutes);
+            Section("admin firewall", AdminFirewall);
             Section("schedule", ScheduleTests);
             Section("config file", ConfigFile);
             Section("proxy over real sockets", ProxyTest);
@@ -85,8 +85,6 @@ namespace VpnKeeper
 
             Yes(Rules.IsCidr("192.168.1.0/24"), "IsCidr yes");
             No(Rules.IsCidr("*.corp.example"), "IsCidr no");
-            string net, mask; IPAddress host;
-            Yes(Rules.ParseCidr("10.7.0.0/24", out net, out mask, out host) && net == "10.7.0.0" && mask == "255.255.255.0" && host.ToString() == "10.7.0.1", "ParseCidr");
 
             string pac = r.Pac("192.168.1.50:8080");
             Yes(pac.Contains("PROXY 192.168.1.50:8080"), "PAC names the proxy");
@@ -108,14 +106,8 @@ namespace VpnKeeper
             No(Proxy.SplitHostPort("host:abc", 80, out host, out port), "port not a number");
         }
 
-        static void AdminRoutes()
+        static void AdminFirewall()
         {
-            List<string> clients = Config.Split("10.7.0.0/24 192.168.1.0/24 127.0.0.1/32");
-            List<string> routes = Admin.RoutesNeeded(clients, "192.168.1.0/24");
-            Eq(1, routes.Count, "one route needed");
-            Eq("10.7.0.0/24", routes.Count > 0 ? routes[0] : "", "the WireGuard subnet, not the LAN or loopback");
-            Eq(0, Admin.RoutesNeeded(Config.Split("192.168.1.0/24"), "192.168.1.0/24").Count, "LAN only = no route");
-            Eq(0, Admin.RoutesNeeded(Config.Split("*.corp.example"), "192.168.1.0/24").Count, "names are not routes");
             Eq(1, Admin.CidrClients(Config.Split("10.0.0.0/8 *.x")).Count, "CidrClients keeps only CIDRs");
 
             // The plan is built in the user's context and passed to the elevated
@@ -125,8 +117,7 @@ namespace VpnKeeper
             cfg.Clients = Config.Split("192.168.1.0/24 10.7.0.0/24");
             AdminPlan plan = Admin.Plan(cfg, lan);
             Eq("192.168.1.0/24,10.7.0.0/24", plan.RemoteIp, "remoteip = the client CIDRs");
-            Eq(1, plan.Routes.Count, "one route in the plan");
-            Eq("port=8080 remoteip=192.168.1.0/24,10.7.0.0/24 route=10.7.0.0,255.255.255.0,192.168.1.1", plan.ToArgs(), "plan args");
+            Eq("port=8080 remoteip=192.168.1.0/24,10.7.0.0/24", plan.ToArgs(), "plan args");
             Config noCidr = new Config();
             noCidr.Clients = Config.Split("*.corp.example");
             Eq("192.168.1.0/24", Admin.Plan(noCidr, lan).RemoteIp, "no client CIDR falls back to the LAN subnet");

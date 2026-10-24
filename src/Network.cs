@@ -2,18 +2,16 @@ using System;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 
 namespace VpnKeeper
 {
-    // This PC's home network, and whether the VPN has claimed a subnet that
-    // proxy clients come from. Everything here works without admin rights.
+    // This PC's home network, shown by setup/status and used to default the
+    // proxy's client list. Works without admin rights.
     class Lan
     {
         public string Address;   // this PC, e.g. 192.168.1.50
         public string Subnet;    // e.g. 192.168.1.0/24
         public string Gateway;   // the home router, e.g. 192.168.1.1
-        public int IfIndex;
 
         // The physical adapter with a gateway on its own subnet. VPN and
         // virtual adapters are skipped by type and name.
@@ -37,32 +35,11 @@ namespace VpnKeeper
                         lan.Address = a.Address.ToString();
                         lan.Subnet = FromUint(ip & mask) + "/" + Bits(mask);
                         lan.Gateway = g.Address.ToString();
-                        lan.IfIndex = props.GetIPv4Properties().Index;
                         return lan;
                     }
                 }
             }
             return null;
-        }
-
-        // True when traffic to this subnet would leave through another adapter
-        // than the LAN one: replies to its clients would vanish into the VPN.
-        public bool LosesRepliesTo(string cidr)
-        {
-            string net, mask;
-            IPAddress host;
-            if (!Rules.ParseCidr(cidr, out net, out mask, out host)) return false;
-            MibIpForwardRow row;
-            if (GetBestRoute(BitConverter.ToUInt32(host.GetAddressBytes(), 0), 0, out row) != 0) return false;
-            return row.IfIndex != IfIndex;
-        }
-
-        public string RouteCommand(string cidr)
-        {
-            string net, mask;
-            IPAddress host;
-            Rules.ParseCidr(cidr, out net, out mask, out host);
-            return "route -p add " + net + " mask " + mask + " " + Gateway + " metric 1";
         }
 
         static uint ToUint(IPAddress ip)
@@ -82,14 +59,5 @@ namespace VpnKeeper
             while ((mask & 0x80000000) != 0) { n++; mask <<= 1; }
             return n;
         }
-
-        [StructLayout(LayoutKind.Sequential)]
-        struct MibIpForwardRow
-        {
-            public uint Dest, Mask, Policy, NextHop, IfIndex, Type, Proto, Age, NextHopAs, Metric1, Metric2, Metric3, Metric4, Metric5;
-        }
-
-        [DllImport("iphlpapi.dll")]
-        static extern int GetBestRoute(uint destination, uint source, out MibIpForwardRow row);
     }
 }
