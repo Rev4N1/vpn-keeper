@@ -21,6 +21,10 @@ namespace VpnKeeper
         public bool Enabled;
         public List<Win> Kids = new List<Win>();
 
+        // The text as shown: "&Connect" is drawn as Connect (the & underlines
+        // the Alt shortcut), and screen readers report it that way too.
+        public string Caption { get { return Tunnel.StripMnemonic(Text).Trim(); } }
+
         public IEnumerable<Win> Of(string kind)
         {
             foreach (Win k in Kids) if (k.Kind == kind) yield return k;
@@ -30,18 +34,18 @@ namespace VpnKeeper
         {
             foreach (Win b in Of("button"))
                 foreach (string c in captions)
-                    if (string.Equals(b.Text.Trim(), c, StringComparison.OrdinalIgnoreCase)) return b;
+                    if (string.Equals(b.Caption, c, StringComparison.OrdinalIgnoreCase)) return b;
             return null;
         }
 
         public bool HasText(string fragment)
         {
             foreach (Win k in Kids)
-                if (k.Text.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (k.Caption.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0) return true;
             return false;
         }
 
-        public override string ToString() { return Kind + " \"" + Text + "\""; }
+        public override string ToString() { return Kind + " \"" + Caption + "\""; }
     }
 
     class Snapshot
@@ -92,12 +96,17 @@ namespace VpnKeeper
         // "disconnected" contains "connected", "desconectado" contains "conectado".
         public static VpnState Classify(string status)
         {
-            string s = (status ?? "").Trim().ToLowerInvariant();
+            string s = StripMnemonic(status ?? "").Trim().ToLowerInvariant();
             if (s.StartsWith("disconnected") || s.StartsWith("desconectado")) return VpnState.Down;
             if (s.Contains("connecting") || s.Contains("conectando") || s.Contains("disconnecting")
                 || s.Contains("desconectando") || s.Contains("reconnect") || s.Contains("reconect")) return VpnState.Busy;
             if (s.StartsWith("connected") || s.StartsWith("conectado")) return VpnState.Up;
             return VpnState.NoWindow;
+        }
+
+        public static string StripMnemonic(string text)
+        {
+            return text.Replace("&&", "").Replace("&", "").Replace("", "&");
         }
 
         static bool IsStatusWord(string text)

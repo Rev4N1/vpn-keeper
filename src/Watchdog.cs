@@ -72,7 +72,7 @@ namespace VpnKeeper
             {
                 badChecks = 0;
                 Win b = snap.MainButton;
-                string caption = b == null ? "" : b.Text.Trim().ToLowerInvariant();
+                string caption = b == null ? "" : b.Caption.ToLowerInvariant();
                 if (caption.StartsWith("disc") || caption.StartsWith("desc"))
                 {
                     Log.Warn("tunnel looks dead; disconnecting so it can log in again");
@@ -138,7 +138,10 @@ namespace VpnKeeper
                 Win connect = snap.Main == null ? null : snap.Main.Button("Connect", "Conectar");
                 if (connect == null || !connect.Enabled)
                 {
-                    Log.Warn("no enabled Connect button yet");
+                    List<string> seen = new List<string>();
+                    if (snap.Main != null) foreach (Win b in snap.Main.Of("button")) seen.Add("\"" + b.Caption + "\"" + (b.Enabled ? "" : " (disabled)"));
+                    Log.Warn("no enabled Connect button yet; buttons seen: " + (seen.Count == 0 ? "none" : string.Join(", ", seen.ToArray()))
+                        + " (run  vpn-keeper.exe dump  for the full picture)");
                     return false;
                 }
                 Log.Info("VPN is down; logging in to '" + cfg.Profile + "'");
@@ -270,7 +273,7 @@ namespace VpnKeeper
         static string Describe(Win w)
         {
             List<string> parts = new List<string>();
-            foreach (Win k in w.Kids) if (k.Kind == "static" && k.Text.Trim().Length > 0) parts.Add(k.Text.Trim());
+            foreach (Win k in w.Kids) if (k.Kind == "static" && k.Caption.Length > 0) parts.Add(k.Caption);
             return w.Text + ": " + string.Join(" | ", parts.ToArray());
         }
 

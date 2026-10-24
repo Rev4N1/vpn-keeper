@@ -55,7 +55,7 @@ namespace VpnKeeper.Fake
             status.Text = "Disconnected";
             status.Location = new Point(160, 100);
             status.AutoSize = true;
-            action.Text = "Connect";
+            action.Text = "&Connect";   // shortcut marker, like many WinForms apps
             action.Location = new Point(420, 170);
             action.Click += OnAction;
             Controls.AddRange(new Control[] { cfgLabel, profile, statusLabel, status, action });
@@ -65,7 +65,7 @@ namespace VpnKeeper.Fake
                 expiry.Stop();
                 // What the real client does at the 8h mark: it drops the tunnel
                 // and asks for the credentials again.
-                SetState("Reconnecting...", "Cancel");
+                SetState("Reconnecting...", "&Cancel");
                 Authenticate();
             };
         }
@@ -79,16 +79,16 @@ namespace VpnKeeper.Fake
 
         void OnAction(object sender, EventArgs e)
         {
-            if (action.Text == "Connect")
+            if (action.Text == "&Connect")
             {
-                SetState("Connecting...", "Cancel");
+                SetState("Connecting...", "&Cancel");
                 // The real client opens the dialogs after the button handler returns.
                 BeginInvoke(new MethodInvoker(Authenticate));
             }
             else
             {
                 expiry.Stop();
-                SetState("Disconnected", "Connect");
+                SetState("Disconnected", "&Connect");
             }
         }
 
@@ -98,7 +98,7 @@ namespace VpnKeeper.Fake
             {
                 if (p.ShowDialog(this) != DialogResult.OK || p.Password != password)
                 {
-                    SetState("Disconnected", "Connect");
+                    SetState("Disconnected", "&Connect");
                     return;
                 }
             }
@@ -106,12 +106,12 @@ namespace VpnKeeper.Fake
             {
                 if (o.ShowDialog(this) != DialogResult.OK || !CodeOk(o.Code))
                 {
-                    SetState("Disconnected", "Connect");
+                    SetState("Disconnected", "&Connect");
                     return;
                 }
             }
             Logins++;
-            SetState("Connected", "Disconnect");
+            SetState("Connected", "&Disconnect");
             if (expireSeconds > 0) { expiry.Interval = expireSeconds * 1000; expiry.Start(); }
         }
 
@@ -142,7 +142,7 @@ namespace VpnKeeper.Fake
             pass.Width = 280;
             pass.UseSystemPasswordChar = true;
             CheckBox change = new CheckBox { Text = "Change password", Location = new Point(160, 140), AutoSize = true };
-            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(250, 210) };
+            Button ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, Location = new Point(250, 210) };
             Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(360, 210) };
             Controls.AddRange(new Control[] { title, userLabel, user, passLabel, pass, change, ok, cancel });
             AcceptButton = ok;
@@ -168,7 +168,7 @@ namespace VpnKeeper.Fake
             Label prompt = new Label { Text = "Enter 6 digit code or backup code:", Location = new Point(20, 70), AutoSize = true };
             code.Location = new Point(280, 66);
             code.Width = 280;
-            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(500, 170) };
+            Button ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, Location = new Point(500, 170) };
             Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(620, 170) };
             Controls.AddRange(new Control[] { info, prompt, code, ok, cancel });
             AcceptButton = ok;

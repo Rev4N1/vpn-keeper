@@ -71,6 +71,7 @@ cmdkey /generic:vpn-keeper:otp /user:otp /pass          # paste the Base32 TOTP 
 | `check` | config, saved credentials, Connect Tunnel state |
 | `otp` | the current one-time code, to compare with your authenticator app |
 | `login` | log the VPN in once and exit |
+| `dump` | the Connect Tunnel windows as the agent sees them (for diagnosing) |
 | `install` / `uninstall` | start at every logon (a shortcut in your Startup folder) / stop that |
 | `selftest` | built-in tests |
 | `version` | the build version |

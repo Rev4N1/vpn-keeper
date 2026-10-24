@@ -86,6 +86,9 @@ namespace VpnKeeper
             Equal(VpnState.Down, Tunnel.Classify("Desconectado"), "Desconectado");
             Equal(VpnState.NoWindow, Tunnel.Classify("Status:"), "label 'Status:'");
             Equal(VpnState.NoWindow, Tunnel.Classify("Configuration:"), "label 'Configuration:'");
+            Equal(VpnState.Down, Tunnel.Classify("&Disconnected"), "mnemonic in a status");
+            Equal("Connect", Tunnel.StripMnemonic("&Connect"), "mnemonic stripped");
+            Equal("Save & Exit", Tunnel.StripMnemonic("Save && E&xit"), "literal && kept");
         }
 
         static void TestRules()
@@ -256,7 +259,7 @@ namespace VpnKeeper
                 Snapshot snap = WaitFor(delegate(Snapshot s) { return s.State == VpnState.Down; }, 20);
                 Equal(VpnState.Down, snap.State, "fake client found and Disconnected");
                 Check(snap.Profile != null && snap.Profile.Text == "VPN Example", "profile read from the combo box");
-                Check(snap.MainButton != null && snap.MainButton.Text == "Connect", "Connect button found");
+                Check(snap.MainButton != null && snap.MainButton.Caption == "Connect", "Connect button found (its text is &Connect)");
 
                 Check(Watchdog.LoginOnce(cfg), "first login (Connect, password, code)");
                 Equal(VpnState.Up, Tunnel.Take().State, "Connected after login");

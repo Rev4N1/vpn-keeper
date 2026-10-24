@@ -24,6 +24,7 @@ namespace VpnKeeper
   vpn-keeper.exe check      check config, credentials and the VPN client
   vpn-keeper.exe otp        print the current one-time code (compare with your app)
   vpn-keeper.exe login      log the VPN in once, now, and exit
+  vpn-keeper.exe dump       show the Connect Tunnel windows as the agent sees them
   vpn-keeper.exe install    start the agent at every Windows logon
   vpn-keeper.exe uninstall  stop starting it at logon
   vpn-keeper.exe selftest   run the built-in tests (CI also passes a fake client)
@@ -51,6 +52,7 @@ Log:    %LOCALAPPDATA%\vpn-keeper\vpn-keeper.log";
                     case "run": return Agent.Run(cfg);
                     case "check": return Agent.Check(cfg);
                     case "otp": return Agent.PrintOtp(cfg);
+                    case "dump": return Agent.Dump();
                     case "login": return Watchdog.LoginOnce(cfg) ? 0 : 1;
                     case "install": Startup.Install(); return 0;
                     case "uninstall": Startup.Uninstall(); return 0;

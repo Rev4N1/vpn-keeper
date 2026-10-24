@@ -91,6 +91,29 @@ namespace VpnKeeper
             return problems == 0 ? 0 : 1;
         }
 
+        // What the agent sees of Connect Tunnel, for diagnosing a client update.
+        // Text boxes show only their length, never their contents.
+        public static int Dump()
+        {
+            Snapshot snap = Tunnel.Take();
+            Console.WriteLine("Connect Tunnel running: " + snap.Running + ", state: " + snap.State);
+            foreach (Win w in snap.Windows)
+            {
+                string role = w == snap.Main ? "MAIN" : w == snap.PasswordDialog ? "LOGIN PROMPT" : w == snap.OtpDialog ? "CODE PROMPT"
+                    : snap.MessageBoxes.Contains(w) ? "MESSAGE BOX" : "other";
+                Console.WriteLine();
+                Console.WriteLine("[" + role + "] \"" + w.Caption + "\"  class=" + w.Class + (w.Enabled ? "" : "  (disabled)"));
+                foreach (Win k in w.Kids)
+                {
+                    if (k.Kind == "window") continue;
+                    string text = k.Kind == "edit" ? "<" + k.Text.Length + " chars>" : "\"" + k.Text + "\"";
+                    Console.WriteLine("    " + k.Kind.PadRight(9) + text + (k.Enabled ? "" : "  (disabled)")
+                        + (k == snap.StatusLabel ? "  <- status" : k == snap.MainButton ? "  <- main button" : ""));
+                }
+            }
+            return 0;
+        }
+
         public static int PrintOtp(Config cfg)
         {
             string user, seed;
