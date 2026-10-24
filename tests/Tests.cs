@@ -117,6 +117,19 @@ namespace VpnKeeper
             Eq(0, Admin.RoutesNeeded(Config.Split("192.168.1.0/24"), "192.168.1.0/24").Count, "LAN only = no route");
             Eq(0, Admin.RoutesNeeded(Config.Split("*.corp.example"), "192.168.1.0/24").Count, "names are not routes");
             Eq(1, Admin.CidrClients(Config.Split("10.0.0.0/8 *.x")).Count, "CidrClients keeps only CIDRs");
+
+            // The plan is built in the user's context and passed to the elevated
+            // worker as args, so it never re-reads config as the wrong account.
+            Lan lan = new Lan { Address = "192.168.1.50", Subnet = "192.168.1.0/24", Gateway = "192.168.1.1" };
+            Config cfg = new Config();
+            cfg.Clients = Config.Split("192.168.1.0/24 10.7.0.0/24");
+            AdminPlan plan = Admin.Plan(cfg, lan);
+            Eq("192.168.1.0/24,10.7.0.0/24", plan.RemoteIp, "remoteip = the client CIDRs");
+            Eq(1, plan.Routes.Count, "one route in the plan");
+            Eq("port=8080 remoteip=192.168.1.0/24,10.7.0.0/24 route=10.7.0.0,255.255.255.0,192.168.1.1", plan.ToArgs(), "plan args");
+            Config noCidr = new Config();
+            noCidr.Clients = Config.Split("*.corp.example");
+            Eq("192.168.1.0/24", Admin.Plan(noCidr, lan).RemoteIp, "no client CIDR falls back to the LAN subnet");
         }
 
         // 2026-06-01 is a Monday, so +0..+6 are Mon..Sun.

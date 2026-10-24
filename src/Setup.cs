@@ -242,31 +242,29 @@ namespace VpnKeeper
 
         static void ApplyAdminSteps(Config cfg, Lan lan)
         {
+            AdminPlan plan = Admin.Plan(cfg, lan);
             Console.WriteLine("One admin step is left: a firewall rule for the proxy"
-                + (lan != null && Admin.RoutesNeeded(cfg.Clients, lan.Subnet).Count > 0 ? ", and a route for your remote clients." : "."));
+                + (plan.Routes.Count > 0 ? ", and a route for your remote clients." : "."));
             Console.Write("Apply it now? A Windows admin prompt will appear. [Y/n]: ");
             string a = Console.ReadLine();
             bool yes = a == null || a.Trim().Length == 0 || a.Trim().ToLowerInvariant().StartsWith("y");
             if (yes)
             {
-                int r = Admin.Elevate();
+                int r = Admin.Elevate(plan);
                 if (r == 0) { Console.WriteLine("  done."); PrintProxyUrl(cfg, lan); return; }
                 Console.WriteLine(r < 0 ? "  admin prompt declined." : "  could not apply it all (see the log); do it by hand:");
             }
-            PrintManualSteps(cfg, lan);
+            PrintManualSteps(plan);
             PrintProxyUrl(cfg, lan);
         }
 
-        static void PrintManualSteps(Config cfg, Lan lan)
+        static void PrintManualSteps(AdminPlan plan)
         {
             Console.WriteLine("\nRun these in an administrator PowerShell:");
-            string remote = string.Join(",", Admin.CidrClients(cfg.Clients).ToArray());
-            if (remote.Length == 0) remote = lan != null ? lan.Subnet : "LocalSubnet";
             Console.WriteLine("  New-NetFirewallRule -DisplayName '" + Admin.FirewallRule + "' -Direction Inbound -Protocol TCP -LocalPort "
-                + cfg.Port + " -RemoteAddress " + remote + " -Action Allow -Profile Any");
-            if (lan != null)
-                foreach (string c in Admin.RoutesNeeded(cfg.Clients, lan.Subnet))
-                    Console.WriteLine("  " + lan.RouteCommand(c));
+                + plan.Port + " -RemoteAddress " + plan.RemoteIp + " -Action Allow -Profile Any");
+            foreach (string[] r in plan.Routes)
+                Console.WriteLine("  route -p add " + r[0] + " mask " + r[1] + " " + r[2] + " metric 1");
         }
 
         static void PrintProxyUrl(Config cfg, Lan lan)

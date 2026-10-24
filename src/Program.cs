@@ -37,7 +37,7 @@ namespace VpnKeeper
                     case "agent": return RunAgent(false);      // started by the supervisor
                     case "run": Log.Echo = true; return RunAgent(true);
                     case "setup": return Setup.Run();
-                    case "netsetup": return Admin.Apply(Config.Load(), Lan.Find());   // elevated worker, launched by setup
+                    case "netsetup": return Admin.ApplyFromArgs(Skip(args));   // elevated worker, launched by setup with the plan as args
                     case "status": return Setup.Status();
                     case "uninstall": return Setup.Uninstall();
                     case "version": Console.WriteLine(BuildInfo.Version); return 0;
@@ -81,6 +81,13 @@ namespace VpnKeeper
                     Thread.Sleep(10000);
                 }
             }
+        }
+
+        static string[] Skip(string[] args)
+        {
+            string[] rest = new string[Math.Max(0, args.Length - 1)];
+            Array.Copy(args, 1, rest, 0, rest.Length);
+            return rest;
         }
 
         static int RunAgent(bool foreground)
