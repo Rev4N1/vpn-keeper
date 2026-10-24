@@ -1,5 +1,4 @@
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.cs text eol=crlf
-*.conf.example text eol=crlf
 *.exe binary

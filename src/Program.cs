@@ -63,13 +63,20 @@ namespace VpnKeeper
             {
                 if (!created) return 0;   // already running in this session
                 string exe = Process.GetCurrentProcess().MainModule.FileName;
+                Log.Info("supervisor started");
                 while (true)
                 {
-                    using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
+                    // Nothing in here may throw out of the loop, or the agent
+                    // would stop being restarted until the next logon.
+                    try
                     {
-                        p.WaitForExit();
-                        Log.Warn("agent exited (code " + p.ExitCode + "); starting it again in 10 s");
+                        using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
+                        {
+                            p.WaitForExit();
+                            Log.Warn("agent exited (code " + p.ExitCode + "); starting it again in 10 s");
+                        }
                     }
+                    catch (Exception e) { Log.Error("supervisor could not start the agent: " + e.Message); }
                     Thread.Sleep(10000);
                 }
             }
