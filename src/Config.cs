@@ -15,6 +15,7 @@ namespace VpnKeeper
         public List<string> Allow = new List<string>();   // what the proxy may reach
         public List<string> Clients = new List<string>(); // who may use the proxy
         public int Port = 8080;
+        public string Hours = "";   // "HH:MM-HH:MM" the VPN may be connected; empty = always
 
         public static string InstallDir
         {
@@ -53,6 +54,11 @@ namespace VpnKeeper
                         if (!int.TryParse(v, out c.Port) || c.Port < 1 || c.Port > 65535)
                             throw new FormatException(path + ":" + n + ": port must be 1-65535");
                         break;
+                    case "hours":
+                        try { Schedule.Parse(v); }
+                        catch (FormatException e) { throw new FormatException(path + ":" + n + ": " + e.Message); }
+                        c.Hours = v;
+                        break;
                     default: throw new FormatException(path + ":" + n + ": unknown key '" + key + "'");
                 }
             }
@@ -68,6 +74,7 @@ namespace VpnKeeper
             sb.AppendLine("allow     = " + string.Join(" ", Allow.ToArray()));
             sb.AppendLine("clients   = " + string.Join(" ", Clients.ToArray()));
             sb.AppendLine("port      = " + Port);
+            sb.AppendLine("hours     = " + Hours + "   # HH:MM-HH:MM the VPN may be on; empty = always");
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             File.WriteAllText(path, sb.ToString());
         }

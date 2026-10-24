@@ -76,6 +76,17 @@ addresses.
 Settings live in `vpn-keeper.conf` next to the installed `.exe`; the log is in
 `%LOCALAPPDATA%\vpn-keeper\vpn-keeper.log`.
 
+### Connect only during set hours
+
+`setup` asks for this, or set `hours` in `vpn-keeper.conf`:
+
+```
+hours = 07:30-17:30     # keep the VPN on only in this window; empty = always
+```
+
+Outside the window the agent keeps the VPN disconnected and never logs in (a
+window whose end is before its start, like `22:00-06:00`, runs overnight).
+
 ## Build
 
 Every push runs [CI](.github/workflows/build.yml) on Windows: it compiles and

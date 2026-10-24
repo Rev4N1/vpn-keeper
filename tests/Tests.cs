@@ -25,6 +25,7 @@ namespace VpnKeeper
             Section("status captions", Captions);
             Section("allow lists and PAC", RulesTests);
             Section("request parsing", Parsing);
+            Section("schedule", ScheduleTests);
             Section("config file", ConfigFile);
             Section("proxy over real sockets", ProxyTest);
             if (args.Length > 0) Section("login against the fake Connect Tunnel", delegate { Login(args[0]); });
@@ -103,6 +104,27 @@ namespace VpnKeeper
             Yes(Proxy.SplitHostPort("[::1]:8443", 80, out host, out port) && host == "::1" && port == 8443, "IPv6 target");
             No(Proxy.SplitHostPort("host:99999", 80, out host, out port), "port out of range");
             No(Proxy.SplitHostPort("host:abc", 80, out host, out port), "port not a number");
+        }
+
+        static DateTime At(int h, int m) { return new DateTime(2026, 1, 1, h, m, 0); }
+
+        static void ScheduleTests()
+        {
+            Yes(Schedule.Parse("").Always, "empty = always");
+            Yes(Schedule.Parse("   ").Active(At(3, 0)), "blank is always active");
+            Schedule work = Schedule.Parse("07:30-17:30");
+            No(work.Active(At(7, 29)), "before start");
+            Yes(work.Active(At(7, 30)), "at start");
+            Yes(work.Active(At(12, 0)), "inside");
+            No(work.Active(At(17, 30)), "at end (exclusive)");
+            No(work.Active(At(23, 0)), "after end");
+            Schedule night = Schedule.Parse("22:00-06:00");
+            Yes(night.Active(At(23, 0)), "overnight before midnight");
+            Yes(night.Active(At(2, 0)), "overnight after midnight");
+            No(night.Active(At(12, 0)), "overnight midday off");
+            Yes(Schedule.Parse("7:30-17:30").Active(At(8, 0)), "single-digit hour");
+            Yes(Throws(delegate { Schedule.Parse("7:30"); }), "missing dash rejected");
+            Yes(Throws(delegate { Schedule.Parse("25:00-26:00"); }), "bad time rejected");
         }
 
         static void ConfigFile()

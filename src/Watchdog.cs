@@ -33,6 +33,21 @@ namespace VpnKeeper
             Status.Set(st);
             if (st != VpnState.NoWindow) noWindowSince = DateTime.MaxValue;
 
+            // Outside the allowed hours: keep the VPN down. Cancel any login
+            // prompt, and disconnect if it is up; never start a login.
+            if (!Schedule.Parse(cfg.Hours).Active(DateTime.Now))
+            {
+                Win cancel = (snap.PasswordDialog ?? snap.OtpDialog) == null ? null : (snap.PasswordDialog ?? snap.OtpDialog).Button("Cancel", "Cancelar");
+                if (cancel != null) Tunnel.Click(cancel);
+                Win b = snap.MainButton;
+                if (st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
+                {
+                    Log.Info("outside the allowed hours (" + cfg.Hours + "); disconnecting");
+                    Tunnel.Click(b);
+                }
+                return 60;
+            }
+
             // A login prompt is open (the server asking again, or a half-done
             // login): answer it, whoever started it.
             if (snap.PasswordDialog != null || snap.OtpDialog != null)

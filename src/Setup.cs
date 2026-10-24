@@ -52,6 +52,15 @@ namespace VpnKeeper
             }
             cfg.Clients = AskList("who may use the proxy (networks, space separated)", clientsDefault);
 
+            // Optional: only keep the VPN connected within a daily time window.
+            while (true)
+            {
+                string h = Ask("hours to keep the VPN on, HH:MM-HH:MM, or 'always'", cfg.Hours.Length == 0 ? "always" : cfg.Hours);
+                if (h.Equals("always", StringComparison.OrdinalIgnoreCase)) { cfg.Hours = ""; break; }
+                try { Schedule.Parse(h); cfg.Hours = h; break; }
+                catch (FormatException e) { Console.WriteLine("  " + e.Message); }
+            }
+
             cfg.Save(Config.FilePath);
             Console.WriteLine("settings saved to " + Config.FilePath + "\n");
 
@@ -84,6 +93,7 @@ namespace VpnKeeper
             Console.WriteLine("  check_url: " + Show(cfg.CheckUrl));
             Console.WriteLine("  allow:     " + Show(string.Join(" ", cfg.Allow.ToArray())));
             Console.WriteLine("  clients:   " + Show(string.Join(" ", cfg.Clients.ToArray())));
+            Console.WriteLine("  hours:     " + (cfg.Hours.Length == 0 ? "always" : cfg.Hours + (Schedule.Parse(cfg.Hours).Active(DateTime.Now) ? " (now: on)" : " (now: off)")));
 
             Console.WriteLine("  VPN password:  " + (HasSecret(Credentials.Vpn) ? "saved" : "MISSING (run vpn-keeper setup)"));
             Console.WriteLine("  TOTP seed:     " + TotpStatus());
