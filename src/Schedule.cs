@@ -1,27 +1,72 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 
 namespace VpnKeeper
 {
-    // When the VPN is allowed to be connected. Empty means always. Otherwise a
-    // daily time window "HH:MM-HH:MM" (e.g. 07:30-17:30); a window whose end is
-    // before its start runs overnight (e.g. 22:00-06:00).
+    // When the VPN is allowed to be connected. Empty means always. Otherwise
+    // one or more rules "[days] HH:MM-HH:MM", separated by commas:
+    //
+    //   07:30-17:30                        every day in that window
+    //   Mon-Thu 07:45-17:00, Fri 07:45-15:00   weekdays, shorter Friday, weekend off
+    //
+    // Days are Mon Tue Wed Thu Fri Sat Sun (ranges like Mon-Thu, or lists like
+    // Mon,Wed,Fri). A rule with no days applies to every day. The VPN is on
+    // when any rule's days and time window include now; otherwise off.
     class Schedule
     {
-        readonly int startMin = -1, endMin = -1;   // minutes from midnight; -1 = always
+        struct Rule { public int Days; public int Start, End; }   // Days: bit per DayOfWeek (Sun=0..Sat=6)
+
+        readonly List<Rule> rules = new List<Rule>();   // empty = always
         public readonly string Text;
 
-        Schedule(string text, int start, int end) { Text = text; startMin = start; endMin = end; }
+        Schedule(string text) { Text = text; }
 
-        public bool Always { get { return startMin < 0; } }
+        public bool Always { get { return rules.Count == 0; } }
 
         public static Schedule Parse(string s)
         {
             s = (s ?? "").Trim();
-            if (s.Length == 0) return new Schedule("", -1, -1);
-            string[] parts = s.Split('-');
-            if (parts.Length != 2) throw new FormatException("hours must be HH:MM-HH:MM, e.g. 07:30-17:30");
-            return new Schedule(s, Minutes(parts[0]), Minutes(parts[1]));
+            Schedule sched = new Schedule(s);
+            if (s.Length == 0 || s.Equals("always", StringComparison.OrdinalIgnoreCase)) return sched;
+
+            // Commas only separate; whitespace does the real splitting. A token
+            // with ':' is a time window and ends the current rule; others name days.
+            int days = 0;
+            foreach (string tok in s.Replace(",", " ").Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (tok.IndexOf(':') >= 0)
+                {
+                    Rule r = new Rule();
+                    r.Days = days == 0 ? 0x7F : days;   // no days named = every day
+                    Window(tok, out r.Start, out r.End);
+                    sched.rules.Add(r);
+                    days = 0;
+                }
+                else days |= DayBits(tok);
+            }
+            if (days != 0) throw new FormatException("days '" + s + "' have no time window after them");
+            if (sched.rules.Count == 0) throw new FormatException("hours needs a time window, e.g. 07:30-17:30");
+            return sched;
+        }
+
+        public bool Active(DateTime now)
+        {
+            if (Always) return true;
+            int bit = 1 << (int)now.DayOfWeek;
+            int m = now.Hour * 60 + now.Minute;
+            foreach (Rule r in rules)
+                if ((r.Days & bit) != 0 && (r.Start <= r.End ? (m >= r.Start && m < r.End) : (m >= r.Start || m < r.End)))
+                    return true;
+            return false;
+        }
+
+        static void Window(string tok, out int start, out int end)
+        {
+            string[] parts = tok.Split('-');
+            if (parts.Length != 2) throw new FormatException("'" + tok + "' must be HH:MM-HH:MM");
+            start = Minutes(parts[0]);
+            end = Minutes(parts[1]);
         }
 
         static int Minutes(string hhmm)
@@ -32,11 +77,34 @@ namespace VpnKeeper
             return t.Hour * 60 + t.Minute;
         }
 
-        public bool Active(DateTime now)
+        // A day name or range (Mon, Mon-Thu) to a bitmask. Ranges may wrap (Fri-Mon).
+        static int DayBits(string tok)
         {
-            if (Always) return true;
-            int m = now.Hour * 60 + now.Minute;
-            return startMin <= endMin ? (m >= startMin && m < endMin) : (m >= startMin || m < endMin);
+            int dash = tok.IndexOf('-');
+            if (dash < 0) return 1 << Day(tok);
+            int from = Day(tok.Substring(0, dash)), to = Day(tok.Substring(dash + 1));
+            int bits = 0;
+            for (int i = from; ; i = (i + 1) % 7)
+            {
+                bits |= 1 << i;
+                if (i == to) break;
+            }
+            return bits;
+        }
+
+        static int Day(string name)
+        {
+            switch (name.Trim().ToLowerInvariant())
+            {
+                case "sun": case "sunday": return 0;
+                case "mon": case "monday": return 1;
+                case "tue": case "tues": case "tuesday": return 2;
+                case "wed": case "weds": case "wednesday": return 3;
+                case "thu": case "thur": case "thurs": case "thursday": return 4;
+                case "fri": case "friday": return 5;
+                case "sat": case "saturday": return 6;
+                default: throw new FormatException("'" + name + "' is not a day (Mon Tue Wed Thu Fri Sat Sun)");
+            }
         }
     }
 }

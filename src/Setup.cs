@@ -55,7 +55,7 @@ namespace VpnKeeper
             // Optional: only keep the VPN connected within a daily time window.
             while (true)
             {
-                string h = Ask("hours to keep the VPN on, HH:MM-HH:MM, or 'always'", cfg.Hours.Length == 0 ? "always" : cfg.Hours);
+                string h = Ask("hours to keep the VPN on (e.g. 07:30-17:30, or Mon-Thu 07:45-17:00, Fri 07:45-15:00), or 'always'", cfg.Hours.Length == 0 ? "always" : cfg.Hours);
                 if (h.Equals("always", StringComparison.OrdinalIgnoreCase)) { cfg.Hours = ""; break; }
                 try { Schedule.Parse(h); cfg.Hours = h; break; }
                 catch (FormatException e) { Console.WriteLine("  " + e.Message); }

@@ -106,24 +106,42 @@ namespace VpnKeeper
             No(Proxy.SplitHostPort("host:abc", 80, out host, out port), "port not a number");
         }
 
-        static DateTime At(int h, int m) { return new DateTime(2026, 1, 1, h, m, 0); }
+        // 2026-06-01 is a Monday, so +0..+6 are Mon..Sun.
+        static DateTime On(int dayOffset, int h, int m) { return new DateTime(2026, 6, 1 + dayOffset, h, m, 0); }
 
         static void ScheduleTests()
         {
             Yes(Schedule.Parse("").Always, "empty = always");
-            Yes(Schedule.Parse("   ").Active(At(3, 0)), "blank is always active");
-            Schedule work = Schedule.Parse("07:30-17:30");
-            No(work.Active(At(7, 29)), "before start");
-            Yes(work.Active(At(7, 30)), "at start");
-            Yes(work.Active(At(12, 0)), "inside");
-            No(work.Active(At(17, 30)), "at end (exclusive)");
-            No(work.Active(At(23, 0)), "after end");
+            Yes(Schedule.Parse("always").Always, "'always' = always");
+            Yes(Schedule.Parse("   ").Active(On(2, 3, 0)), "blank is always active");
+
+            Schedule work = Schedule.Parse("07:30-17:30");   // every day
+            No(work.Active(On(0, 7, 29)), "before start");
+            Yes(work.Active(On(0, 7, 30)), "at start");
+            No(work.Active(On(0, 17, 30)), "at end (exclusive)");
+            Yes(work.Active(On(6, 12, 0)), "every day includes Sunday");
+
             Schedule night = Schedule.Parse("22:00-06:00");
-            Yes(night.Active(At(23, 0)), "overnight before midnight");
-            Yes(night.Active(At(2, 0)), "overnight after midnight");
-            No(night.Active(At(12, 0)), "overnight midday off");
-            Yes(Schedule.Parse("7:30-17:30").Active(At(8, 0)), "single-digit hour");
-            Yes(Throws(delegate { Schedule.Parse("7:30"); }), "missing dash rejected");
+            Yes(night.Active(On(0, 23, 0)), "overnight before midnight");
+            Yes(night.Active(On(0, 2, 0)), "overnight after midnight");
+            No(night.Active(On(0, 12, 0)), "overnight midday off");
+
+            // The user's schedule: Mon-Thu 07:45-17:00, Fri 07:45-15:00, weekend off.
+            Schedule s = Schedule.Parse("Mon-Thu 07:45-17:00, Fri 07:45-15:00");
+            No(s.Active(On(0, 7, 44)), "Mon before start");
+            Yes(s.Active(On(0, 7, 45)), "Mon at start");
+            Yes(s.Active(On(3, 16, 59)), "Thu still on at 16:59");
+            No(s.Active(On(3, 17, 0)), "Thu off at 17:00");
+            Yes(s.Active(On(4, 14, 59)), "Fri on at 14:59");
+            No(s.Active(On(4, 15, 0)), "Fri off at 15:00 (shorter)");
+            No(s.Active(On(5, 12, 0)), "Saturday off");
+            No(s.Active(On(6, 12, 0)), "Sunday off");
+
+            Yes(Schedule.Parse("Mon,Wed,Fri 09:00-10:00").Active(On(2, 9, 30)), "day list: Wednesday");
+            No(Schedule.Parse("Mon,Wed,Fri 09:00-10:00").Active(On(1, 9, 30)), "day list: Tuesday off");
+            Yes(Schedule.Parse("7:30-17:30").Active(On(0, 8, 0)), "single-digit hour");
+            Yes(Throws(delegate { Schedule.Parse("Mon 7:30"); }), "missing window rejected");
+            Yes(Throws(delegate { Schedule.Parse("Xyz 09:00-10:00"); }), "bad day rejected");
             Yes(Throws(delegate { Schedule.Parse("25:00-26:00"); }), "bad time rejected");
         }
 

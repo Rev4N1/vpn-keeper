@@ -81,11 +81,14 @@ Settings live in `vpn-keeper.conf` next to the installed `.exe`; the log is in
 `setup` asks for this, or set `hours` in `vpn-keeper.conf`:
 
 ```
-hours = 07:30-17:30     # keep the VPN on only in this window; empty = always
+hours = 07:30-17:30                             # same window every day
+hours = Mon-Thu 07:45-17:00, Fri 07:45-15:00    # weekdays, shorter Friday, weekend off
 ```
 
-Outside the window the agent keeps the VPN disconnected and never logs in (a
-window whose end is before its start, like `22:00-06:00`, runs overnight).
+Each rule is an optional day part (`Mon`, `Mon-Thu`, `Mon,Wed,Fri`) and a
+`HH:MM-HH:MM` window; a rule with no days applies every day. Outside every
+rule the agent keeps the VPN disconnected and never logs in. Empty = always.
+A window whose end is before its start (like `22:00-06:00`) runs overnight.
 
 ## Build
 

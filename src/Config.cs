@@ -15,7 +15,7 @@ namespace VpnKeeper
         public List<string> Allow = new List<string>();   // what the proxy may reach
         public List<string> Clients = new List<string>(); // who may use the proxy
         public int Port = 8080;
-        public string Hours = "";   // "HH:MM-HH:MM" the VPN may be connected; empty = always
+        public string Hours = "";   // when the VPN may be connected (see Schedule); empty = always
 
         public static string InstallDir
         {
@@ -74,7 +74,7 @@ namespace VpnKeeper
             sb.AppendLine("allow     = " + string.Join(" ", Allow.ToArray()));
             sb.AppendLine("clients   = " + string.Join(" ", Clients.ToArray()));
             sb.AppendLine("port      = " + Port);
-            sb.AppendLine("hours     = " + Hours + "   # HH:MM-HH:MM the VPN may be on; empty = always");
+            sb.AppendLine("hours     = " + Hours + "   # when the VPN may be on, e.g. Mon-Thu 07:45-17:00, Fri 07:45-15:00; empty = always");
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             File.WriteAllText(path, sb.ToString());
         }
