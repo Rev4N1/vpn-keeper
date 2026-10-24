@@ -262,7 +262,9 @@ namespace VpnKeeper
                 Check(snap.MainButton != null && snap.MainButton.Caption == "Connect", "Connect button found (its text is &Connect)");
 
                 Check(Watchdog.LoginOnce(cfg), "first login (Connect, password, code)");
-                Equal(VpnState.Up, Tunnel.Take().State, "Connected after login");
+                snap = Tunnel.Take();
+                Equal(VpnState.Up, snap.State, "Connected after login, read from the hidden (tray) window");
+                Check(snap.Main != null && !snap.Main.Visible, "the fake hid its window like the real client");
 
                 // The fake expires the session after 6 s and asks again, like the
                 // real 8h re-authentication; the agent loop must answer it. The new

@@ -19,6 +19,7 @@ namespace VpnKeeper
         public string Class;
         public string Text;
         public bool Enabled;
+        public bool Visible;     // on screen (a window hidden in the tray is not)
         public List<Win> Kids = new List<Win>();
 
         // The text as shown: "&Connect" is drawn as Connect (the & underlines
@@ -131,10 +132,15 @@ namespace VpnKeeper
             {
                 uint pid;
                 GetWindowThreadProcessId(h, out pid);
-                if (pids.Contains(pid) && IsWindowVisible(h)) snap.Windows.Add(Describe(h, true));
+                // Hidden windows count too: Connect Tunnel hides its main window in
+                // the tray once connected, and its status can still be read there.
+                if (pids.Contains(pid) && (IsWindowVisible(h) || ClassOf(h).StartsWith("WindowsForms")))
+                    snap.Windows.Add(Describe(h, true));
                 return true;
             }, IntPtr.Zero);
 
+            // A visible main window wins over a hidden one.
+            snap.Windows.Sort(delegate(Win a, Win b) { return b.Visible.CompareTo(a.Visible); });
             foreach (Win w in snap.Windows)
             {
                 int edits = 0;
@@ -143,8 +149,9 @@ namespace VpnKeeper
                 Win status = null;
                 foreach (Win s in w.Of("static")) if (IsStatusWord(s.Text)) { status = s; break; }
 
-                if (w.Class == "#32770") snap.MessageBoxes.Add(w);
-                else if (status != null && snap.Main == null) { snap.Main = w; snap.StatusLabel = status; }
+                if (status != null && snap.Main == null) { snap.Main = w; snap.StatusLabel = status; }
+                else if (!w.Visible) continue;   // prompts only count while on screen
+                else if (w.Class == "#32770") snap.MessageBoxes.Add(w);
                 else if (ok != null && edits == 1) snap.OtpDialog = w;
                 else if (ok != null && edits >= 2) snap.PasswordDialog = w;
             }
@@ -158,6 +165,7 @@ namespace VpnKeeper
             w.Class = ClassOf(h);
             w.Text = TextOf(h);
             w.Enabled = IsWindowEnabled(h);
+            w.Visible = IsWindowVisible(h);
             string c = w.Class.ToLowerInvariant();
             w.Kind = c.Contains("button") ? "button" : c.Contains("edit") ? "edit" : c.Contains("static") ? "static"
                 : c.Contains("combobox") ? "combobox" : "window";
@@ -166,7 +174,9 @@ namespace VpnKeeper
                 // EnumChildWindows walks every descendant, in creation (z) order.
                 EnumChildWindows(h, delegate(IntPtr k, IntPtr l)
                 {
-                    if (IsWindowVisible(k)) w.Kids.Add(Describe(k, false));
+                    // The control's own visibility, not its window's: inside a
+                    // hidden main window every control reads as invisible.
+                    if ((GetWindowLong(k, GwlStyle) & WsVisible) != 0) w.Kids.Add(Describe(k, false));
                     return true;
                 }, IntPtr.Zero);
             }
@@ -238,6 +248,8 @@ namespace VpnKeeper
         const uint BmClick = 0x00F5;
         const int VkReturn = 0x0D;
         const uint SmtoAbortIfHung = 0x0002;
+        const int GwlStyle = -16;
+        const int WsVisible = 0x10000000;
 
         delegate bool EnumProc(IntPtr h, IntPtr l);
 
@@ -246,6 +258,7 @@ namespace VpnKeeper
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+        [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
         [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);

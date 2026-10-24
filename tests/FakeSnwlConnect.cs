@@ -112,6 +112,8 @@ namespace VpnKeeper.Fake
             }
             Logins++;
             SetState("Connected", "&Disconnect");
+            // Like the real client: once connected, the window goes to the tray.
+            Hide();
             if (expireSeconds > 0) { expiry.Interval = expireSeconds * 1000; expiry.Start(); }
         }
 

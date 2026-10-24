@@ -22,6 +22,7 @@ namespace VpnKeeper
         static int failedLogins;
         static DateTime nextLogin = DateTime.MinValue;
         static long lastOtpStep = -1;
+        static DateTime noWindowSince = DateTime.MaxValue;
 
         // One pass of the agent loop; returns the seconds to wait before the next.
         public static int Tick(Config cfg)
@@ -29,6 +30,7 @@ namespace VpnKeeper
             Snapshot snap = Tunnel.Take();
             VpnState st = snap.State;
             Status.Set(st);
+            if (st != VpnState.NoWindow) noWindowSince = DateTime.MaxValue;
 
             // A login prompt is up (the 8h re-authentication, or a half-finished
             // login): answer it whether or not we started it.
@@ -44,10 +46,14 @@ namespace VpnKeeper
                     Tunnel.Start(cfg.ClientExe);
                     return 15;
                 case VpnState.NoWindow:
-                    // Running but no main window (e.g. minimised to the tray):
-                    // starting it again brings the existing window back.
-                    Log.Warn("Connect Tunnel is running without its window; reopening it");
+                    // Running, but no main window can be read, not even a hidden
+                    // one (usually a moment while it opens). If that lasts, starting
+                    // it again brings the running copy's window back; it is single-instance.
+                    if (noWindowSince == DateTime.MaxValue) noWindowSince = DateTime.Now;
+                    if ((DateTime.Now - noWindowSince).TotalMinutes < 2) return 10;
+                    Log.Warn("Connect Tunnel has shown no window for 2 minutes; reopening it");
                     Tunnel.Start(cfg.ClientExe);
+                    noWindowSince = DateTime.Now;
                     return 15;
                 case VpnState.Busy:
                     return 5;
