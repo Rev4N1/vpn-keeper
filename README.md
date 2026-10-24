@@ -42,9 +42,10 @@ Manager. They are never in a file, the log, or this repository.
    It asks for the configuration name, a URL that only answers through the VPN,
    the sites to share, and your VPN password and one-time-code seed (the Base32
    text from "can't scan the QR code?"). It then installs itself, starts, and
-   prints two commands to run once **as administrator**: a firewall rule for
-   the proxy port, and, if needed, a route so replies to your other machines
-   don't disappear into the VPN.
+   **offers to apply the one admin step for you** through a single Windows
+   admin prompt: the firewall rule for the proxy port, and, if needed, a route
+   so replies to your other machines don't disappear into the VPN. (It prints
+   the commands too, to run by hand if you prefer.)
 
 That's it. Check it any time with `vpn-keeper status`.
 

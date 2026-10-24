@@ -37,6 +37,7 @@ namespace VpnKeeper
                     case "agent": return RunAgent(false);      // started by the supervisor
                     case "run": Log.Echo = true; return RunAgent(true);
                     case "setup": return Setup.Run();
+                    case "netsetup": return Admin.Apply(Config.Load(), Lan.Find());   // elevated worker, launched by setup
                     case "status": return Setup.Status();
                     case "uninstall": return Setup.Uninstall();
                     case "version": Console.WriteLine(BuildInfo.Version); return 0;

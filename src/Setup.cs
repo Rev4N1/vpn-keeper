@@ -72,9 +72,10 @@ namespace VpnKeeper
             InstallAutostart();
             Restart();
 
-            // 8. Tell them the two things only they can do (both need admin).
+            // 8. The firewall rule and route need admin. Offer to apply them
+            //    through one UAC prompt; always show the manual commands too.
             Console.WriteLine();
-            PrintManualSteps(cfg, lan);
+            ApplyAdminSteps(cfg, lan);
             Console.WriteLine("\nSetup done. Check it any time with:  vpn-keeper status");
             return 0;
         }
@@ -239,24 +240,39 @@ namespace VpnKeeper
             Console.WriteLine("agent started");
         }
 
+        static void ApplyAdminSteps(Config cfg, Lan lan)
+        {
+            Console.WriteLine("One admin step is left: a firewall rule for the proxy"
+                + (lan != null && Admin.RoutesNeeded(cfg.Clients, lan.Subnet).Count > 0 ? ", and a route for your remote clients." : "."));
+            Console.Write("Apply it now? A Windows admin prompt will appear. [Y/n]: ");
+            string a = Console.ReadLine();
+            bool yes = a == null || a.Trim().Length == 0 || a.Trim().ToLowerInvariant().StartsWith("y");
+            if (yes)
+            {
+                int r = Admin.Elevate();
+                if (r == 0) { Console.WriteLine("  done."); PrintProxyUrl(cfg, lan); return; }
+                Console.WriteLine(r < 0 ? "  admin prompt declined." : "  could not apply it all (see the log); do it by hand:");
+            }
+            PrintManualSteps(cfg, lan);
+            PrintProxyUrl(cfg, lan);
+        }
+
         static void PrintManualSteps(Config cfg, Lan lan)
         {
-            Console.WriteLine("Two things need an administrator, once. Open PowerShell as administrator:");
-            Console.WriteLine();
-            string clients = lan != null ? lan.Subnet : "192.168.0.0/16";
-            Console.WriteLine("  # let the LAN reach the proxy");
-            Console.WriteLine("  New-NetFirewallRule -DisplayName 'vpn-keeper' -Direction Inbound -Protocol TCP -LocalPort "
-                + cfg.Port + " -RemoteAddress " + clients + " -Action Allow -Profile Any");
+            Console.WriteLine("\nRun these in an administrator PowerShell:");
+            string remote = string.Join(",", Admin.CidrClients(cfg.Clients).ToArray());
+            if (remote.Length == 0) remote = lan != null ? lan.Subnet : "LocalSubnet";
+            Console.WriteLine("  New-NetFirewallRule -DisplayName '" + Admin.FirewallRule + "' -Direction Inbound -Protocol TCP -LocalPort "
+                + cfg.Port + " -RemoteAddress " + remote + " -Action Allow -Profile Any");
             if (lan != null)
-                foreach (string c in cfg.Clients)
-                    if (Rules.IsCidr(c) && lan.LosesRepliesTo(c))
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("  # " + c + " clients reach you through the VPN otherwise");
-                        Console.WriteLine("  " + lan.RouteCommand(c));
-                    }
+                foreach (string c in Admin.RoutesNeeded(cfg.Clients, lan.Subnet))
+                    Console.WriteLine("  " + lan.RouteCommand(c));
+        }
+
+        static void PrintProxyUrl(Config cfg, Lan lan)
+        {
             if (lan != null)
-                Console.WriteLine("\nThen on another PC, set the browser's automatic proxy script to:\n  http://" + lan.Address + ":" + cfg.Port + "/proxy.pac");
+                Console.WriteLine("\nOn another PC, set the browser's automatic proxy script to:\n  http://" + lan.Address + ":" + cfg.Port + "/proxy.pac");
         }
 
         static string ShortcutPath
