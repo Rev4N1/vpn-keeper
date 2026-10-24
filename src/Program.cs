@@ -1,69 +1,94 @@
-// vpn-keeper - keeps the SonicWall Connect Tunnel VPN logged in on this
-// laptop and shares it with the home network through a small HTTP proxy.
+// vpn-keeper - keeps a SonicWall Connect Tunnel VPN logged in on this
+// Windows PC and shares it with other machines through a small HTTP proxy.
 //
-// Written for C# 5 / .NET Framework 4.8 so it builds with the csc.exe that
-// ships with Windows: no SDK, no NuGet, one .exe.
+// C# 5 / .NET Framework 4.8, so it builds with the csc.exe that ships with
+// Windows: no SDK, no packages, one .exe.
 
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace VpnKeeper
 {
     static class Program
     {
-        [DllImport("kernel32.dll")]
-        static extern uint GetConsoleProcessList(uint[] list, uint count);
+        const string Usage =
+@"vpn-keeper " + BuildInfo.Version + @"
+
+  vpn-keeper setup       set up or update (asks; Enter keeps the current values)
+  vpn-keeper status      how everything is, and what to fix
+  vpn-keeper uninstall   stop it and remove it from this PC
+  vpn-keeper run         run in this window, log on screen (for testing; Ctrl+C stops)";
+
+        const string SupervisorMutex = @"Local\vpn-keeper";   // one supervisor per Windows session
 
         [DllImport("kernel32.dll")]
         static extern bool FreeConsole();
 
-        const string Usage =
-@"vpn-keeper " + BuildInfo.Version + @"
-
-  vpn-keeper.exe            run the agent (keep awake, watchdog, proxy); Ctrl+C stops it
-  vpn-keeper.exe check      check config, credentials and the VPN client
-  vpn-keeper.exe otp        print the current one-time code (compare with your app)
-  vpn-keeper.exe login      log the VPN in once, now, and exit
-  vpn-keeper.exe dump       show the Connect Tunnel windows as the agent sees them
-  vpn-keeper.exe install    start the agent at every Windows logon
-  vpn-keeper.exe uninstall  stop starting it at logon
-  vpn-keeper.exe selftest   run the built-in tests (CI also passes a fake client)
-  vpn-keeper.exe version
-
-Config: vpn-keeper.conf next to the .exe (optional; see the example).
-Log:    %LOCALAPPDATA%\vpn-keeper\vpn-keeper.log";
-
         static int Main(string[] args)
         {
-            string cmd = args.Length > 0 ? args[0].TrimStart('-', '/').ToLowerInvariant() : "run";
-            if (cmd != "run") Log.Echo = true;
-            else if (GetConsoleProcessList(new uint[2], 2) <= 1) FreeConsole();   // started from the shortcut: hide the window
-            else Log.Echo = true;                                                 // started in a terminal: show the log live
-
+            string cmd = args.Length > 0 ? args[0].TrimStart('-', '/').ToLowerInvariant() : "";
             try
             {
-                if (cmd == "selftest") return SelfTest.Run(args.Length > 1 ? args[1] : null);
-                if (cmd == "version") { Console.WriteLine(BuildInfo.Version); return 0; }
-                if (cmd == "help" || cmd == "h" || cmd == "?") { Console.WriteLine(Usage); return 0; }
-
-                Config cfg = Config.Load(Config.DefaultPath());
                 switch (cmd)
                 {
-                    case "run": return Agent.Run(cfg);
-                    case "check": return Agent.Check(cfg);
-                    case "otp": return Agent.PrintOtp(cfg);
-                    case "dump": return Agent.Dump();
-                    case "login": return Watchdog.LoginOnce(cfg) ? 0 : 1;
-                    case "install": Startup.Install(); return 0;
-                    case "uninstall": Startup.Uninstall(); return 0;
+                    case "start": return Supervise();          // what autostart runs
+                    case "agent": return RunAgent(false);      // started by the supervisor
+                    case "run": Log.Echo = true; return RunAgent(true);
+                    case "setup": return Setup.Run();
+                    case "status": return Setup.Status();
+                    case "uninstall": return Setup.Uninstall();
+                    case "version": Console.WriteLine(BuildInfo.Version); return 0;
                 }
                 Console.WriteLine(Usage);
-                return 2;
+                return cmd.Length == 0 || cmd == "help" || cmd == "h" || cmd == "?" ? 0 : 2;
             }
             catch (Exception e)
             {
-                Log.Error("fatal: " + e);
+                Log.Echo = true;
+                Log.Error(cmd + ": " + e.Message);
+                Log.Debug(e.ToString());
                 return 1;
+            }
+        }
+
+        // Runs the agent as a child process and starts it again if it ever
+        // exits, so a crash costs seconds, not the rest of the day.
+        static int Supervise()
+        {
+            FreeConsole();   // started from the Startup shortcut: no window
+            bool created;
+            using (Mutex m = new Mutex(true, SupervisorMutex, out created))
+            {
+                if (!created) return 0;   // already running in this session
+                string exe = Process.GetCurrentProcess().MainModule.FileName;
+                while (true)
+                {
+                    using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
+                    {
+                        p.WaitForExit();
+                        Log.Warn("agent exited (code " + p.ExitCode + "); starting it again in 10 s");
+                    }
+                    Thread.Sleep(10000);
+                }
+            }
+        }
+
+        static int RunAgent(bool foreground)
+        {
+            using (Mutex m = new Mutex(false, Agent.Mutex))
+            {
+                bool mine;
+                try { mine = m.WaitOne(foreground ? 0 : Timeout.Infinite); }
+                catch (AbandonedMutexException) { mine = true; }   // the previous agent died; take over
+                if (!mine)
+                {
+                    Console.WriteLine("vpn-keeper is already running in the background. Stop it first: vpn-keeper uninstall");
+                    return 3;
+                }
+                Agent.Run(Config.Load());
+                return 0;
             }
         }
     }

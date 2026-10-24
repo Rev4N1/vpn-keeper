@@ -3,12 +3,15 @@ using System.Runtime.InteropServices;
 
 namespace VpnKeeper
 {
-    // Reads generic credentials saved with:
-    //   cmdkey /generic:vpn-keeper:vpn /user:<vpn user> /pass
-    // They are encrypted for this Windows user (DPAPI); nothing is kept on disk here.
+    // The VPN password and the TOTP seed, as generic entries in Windows
+    // Credential Manager: encrypted for this Windows user (DPAPI), visible in
+    // Control Panel > Credential Manager > Windows Credentials.
     static class Credentials
     {
-        const int CredTypeGeneric = 1;
+        public const string Vpn = "vpn-keeper:vpn";   // user + password
+        public const string Otp = "vpn-keeper:otp";   // the Base32 seed
+
+        const int TypeGeneric = 1, PersistLocalMachine = 2;
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct Credential
@@ -30,6 +33,12 @@ namespace VpnKeeper
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern bool CredRead(string target, int type, int flags, out IntPtr credential);
 
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool CredWrite(ref Credential credential, int flags);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool CredDelete(string target, int type, int flags);
+
         [DllImport("advapi32.dll")]
         static extern void CredFree(IntPtr buffer);
 
@@ -38,7 +47,7 @@ namespace VpnKeeper
             user = null;
             secret = null;
             IntPtr p;
-            if (!CredRead(target, CredTypeGeneric, 0, out p)) return false;
+            if (!CredRead(target, TypeGeneric, 0, out p)) return false;
             try
             {
                 Credential c = (Credential)Marshal.PtrToStructure(p, typeof(Credential));
@@ -46,10 +55,29 @@ namespace VpnKeeper
                 secret = c.CredentialBlobSize > 0 ? Marshal.PtrToStringUni(c.CredentialBlob, c.CredentialBlobSize / 2) : "";
                 return true;
             }
-            finally
+            finally { CredFree(p); }
+        }
+
+        public static void Write(string target, string user, string secret)
+        {
+            Credential c = new Credential();
+            c.Type = TypeGeneric;
+            c.TargetName = target;
+            c.UserName = user;
+            c.Persist = PersistLocalMachine;
+            c.CredentialBlobSize = secret.Length * 2;
+            c.CredentialBlob = Marshal.StringToCoTaskMemUni(secret);
+            try
             {
-                CredFree(p);
+                if (!CredWrite(ref c, 0))
+                    throw new InvalidOperationException("could not save " + target + " in Credential Manager (error " + Marshal.GetLastWin32Error() + ")");
             }
+            finally { Marshal.ZeroFreeCoTaskMemUnicode(c.CredentialBlob); }
+        }
+
+        public static bool Delete(string target)
+        {
+            return CredDelete(target, TypeGeneric, 0);
         }
     }
 }

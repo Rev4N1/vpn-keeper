@@ -1,0 +1,103 @@
+# How vpn-keeper works
+
+One `.exe`, C# 5 on .NET Framework 4.8, so it builds with the compiler that
+ships with Windows and runs with no install. It has no admin rights and runs
+in the user's own desktop session, because that is the only place it can read
+and drive Connect Tunnel's windows.
+
+## Processes
+
+```
+logon ─▶ vpn-keeper start   (supervisor: restarts the agent if it ever exits)
+            └─▶ vpn-keeper agent   (keep awake + proxy + VPN watchdog)
+```
+
+`setup` puts a shortcut to `vpn-keeper start` in the Startup folder. The
+supervisor and the agent each hold a named mutex, so there is never more than
+one of each per session, and an agent crash costs about ten seconds.
+
+## Driving Connect Tunnel
+
+Modern Connect Tunnel has no command line for logging in, so the agent reads
+and operates its windows with plain Win32 messages: no mouse, no keyboard
+focus, so a locked screen is fine. WinForms control ids change on every start,
+so controls are found by class and caption instead. The windows:
+
+| Window | What the agent uses |
+|---|---|
+| main | combo box (the configuration); a status label (`Disconnected` / `Connecting…` / `Connected`); one button, captioned `Connect` / `Cancel` / `Disconnect` |
+| login prompt | a user box (usually prefilled), a password box, `OK` |
+| One Time Password Required | one box, `OK` |
+
+Details that matter in practice:
+
+- **`&` shortcut markers.** A button's text is often `&Connect` (the `&`
+  underlines the Alt key). Captions are compared with the marker stripped.
+- **The tray.** Once connected, Connect Tunnel hides its main window. Hidden
+  WinForms windows are read too, so the status is never lost; login prompts are
+  only acted on while actually on screen.
+- **Filling and clicking.** Text goes in with `WM_SETTEXT` (password boxes
+  accept it; they only refuse to be read). `OK` is a *posted* `BM_CLICK`,
+  because it opens the next modal dialog. If a dialog ignores it, the agent
+  falls back to a mouse click, then Enter.
+- **Language.** English and Spanish captions are both recognised.
+
+`vpn-keeper status` prints what the agent currently sees, for when a Connect
+Tunnel update changes something.
+
+## The watchdog loop
+
+Every 30 s while connected, every few seconds otherwise:
+
+- a **login prompt open** (the server asking again) → answer it;
+- **Disconnected** → check the selected configuration matches, press Connect,
+  enter the password and the code, wait for `Connected`;
+- **Connected** → request the check URL; this also counts as activity, which
+  holds off idle timeouts. Three failures in a row means a dead tunnel:
+  disconnect, so the next pass logs in fresh;
+- **not running** → start Connect Tunnel.
+
+Safeguards:
+
+- **Lockout-safe.** Corporate passwords often lock after a few bad tries, so a
+  failed login backs off 2, then 5, then 60 minutes.
+- **Codes used once.** A one-time code is never reused, and one about to expire
+  is held until the next 30-second window.
+- **Secrets** are read from Credential Manager (DPAPI, this user only) at each
+  login and never written to the log.
+
+## Keeping awake
+
+While the agent runs it holds `ES_SYSTEM_REQUIRED`, like a video player: idle
+sleep is blocked, nothing is reconfigured, and it is released when the agent
+stops. The screen can still turn off and lock. The lid is a separate Windows
+setting.
+
+## The proxy
+
+A small HTTP proxy (`CONNECT` for https, absolute URLs for http). Names are
+resolved on this PC, so internal names and the VPN's DNS work, and traffic
+follows the VPN's split-tunnel routes. Two lists keep it from being an open
+door: `clients` (who may connect) and `allow` (where it may go); anything else
+gets 403. `/proxy.pac` is generated from `allow` and points at the address the
+request arrived on, so browsers send exactly the shared sites to the proxy and
+everything else direct. The listener restarts itself if it ever fails.
+
+## The route gotcha
+
+A company VPN often pushes a broad route such as `10.0.0.0/8`. If that covers
+the subnet your proxy clients come from (a home VPN's subnet, say), this PC
+would send its replies into the company tunnel instead of back to them.
+`setup` and `status` detect this and print the one-line `route -p add …` that
+fixes it (a more specific route via the home router). Choosing a client subnet
+the VPN doesn't cover avoids it entirely.
+
+## Tests
+
+`build.ps1 -Test` builds a separate `tests.exe` (no test code ships in
+`vpn-keeper.exe`) and runs it. It covers TOTP against the RFC 6238 vectors,
+Base32, the status captions, the allow lists and PAC, request parsing, the
+config round-trip, and the proxy over real sockets. Given a fake
+`SnwlConnect.exe` — a WinForms program with the same windows, `&` markers and
+tray-hiding, that actually checks the password and code — it also runs a full
+login and a forced re-login end to end. CI runs all of it on every push.

@@ -14,12 +14,14 @@ namespace VpnKeeper
         readonly List<uint[]> nets = new List<uint[]>();   // {network, mask}
         readonly List<string> names = new List<string>();  // exact host names
         readonly List<string> domains = new List<string>(); // ".corp.example" style suffixes
-        public readonly List<string> Source;
+        readonly List<string> source;
+
+        public override string ToString() { return source.Count == 0 ? "(none)" : string.Join(" ", source.ToArray()); }
 
         public Rules(IEnumerable<string> entries)
         {
-            Source = new List<string>(entries);
-            foreach (string raw in Source)
+            source = new List<string>(entries);
+            foreach (string raw in source)
             {
                 string e = raw.Trim().ToLowerInvariant();
                 uint net, mask;
@@ -87,6 +89,25 @@ namespace VpnKeeper
             }
             sb.Append("  return \"DIRECT\";\n}\n");
             return sb.ToString();
+        }
+
+        // "10.7.0.0/24" -> network 10.7.0.0, mask 255.255.255.0, first host 10.7.0.1.
+        public static bool IsCidr(string e)
+        {
+            uint net, mask;
+            return TryCidr(e, out net, out mask);
+        }
+
+        public static bool ParseCidr(string e, out string network, out string mask, out IPAddress firstHost)
+        {
+            uint n, m;
+            network = mask = null;
+            firstHost = null;
+            if (!TryCidr(e, out n, out m)) return false;
+            network = FromUint(n);
+            mask = FromUint(m);
+            firstHost = IPAddress.Parse(FromUint(m == uint.MaxValue ? n : n + 1));
+            return true;
         }
 
         static bool TryCidr(string e, out uint net, out uint mask)

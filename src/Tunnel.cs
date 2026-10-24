@@ -6,10 +6,10 @@ using System.Text;
 
 namespace VpnKeeper
 {
-    // Reads and drives the Connect Tunnel (SnwlConnect.exe) windows with plain
-    // window messages: no mouse, no keyboard focus, so it also works while the
-    // screen is locked. WinForms control ids change on every start, so controls
-    // are found by their class and caption (see docs/how-it-works.md).
+    // Reads and drives Connect Tunnel's (SnwlConnect.exe) windows with plain
+    // window messages: no mouse, no keyboard focus, so it works with the
+    // screen locked. WinForms control ids change on every start, so controls
+    // are found by class and caption (docs/design.md has the window map).
     enum VpnState { NotRunning, NoWindow, Down, Busy, Up }
 
     class Win
@@ -22,8 +22,7 @@ namespace VpnKeeper
         public bool Visible;     // on screen (a window hidden in the tray is not)
         public List<Win> Kids = new List<Win>();
 
-        // The text as shown: "&Connect" is drawn as Connect (the & underlines
-        // the Alt shortcut), and screen readers report it that way too.
+        // The text as drawn: "&Connect" shows as Connect (& marks the Alt key).
         public string Caption { get { return Tunnel.StripMnemonic(Text).Trim(); } }
 
         public IEnumerable<Win> Of(string kind)
@@ -33,30 +32,24 @@ namespace VpnKeeper
 
         public Win Button(params string[] captions)
         {
-            foreach (Win b in Of("button"))
-                foreach (string c in captions)
-                    if (string.Equals(b.Caption, c, StringComparison.OrdinalIgnoreCase)) return b;
+            foreach (Win b in Of("button")) if (Tunnel.Is(b, captions)) return b;
             return null;
         }
 
-        public bool HasText(string fragment)
+        // The window title and its labels, e.g. for an error message box.
+        public string Summary()
         {
-            foreach (Win k in Kids)
-                if (k.Caption.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-            return false;
+            List<string> parts = new List<string>();
+            foreach (Win k in Of("static")) if (k.Caption.Length > 0) parts.Add(k.Caption);
+            return Caption + ": " + string.Join(" | ", parts.ToArray());
         }
-
-        public override string ToString() { return Kind + " \"" + Caption + "\""; }
     }
 
     class Snapshot
     {
         public bool Running;
         public List<Win> Windows = new List<Win>();
-        public Win Main;
-        public Win StatusLabel;
-        public Win PasswordDialog;
-        public Win OtpDialog;
+        public Win Main, StatusLabel, PasswordDialog, OtpDialog;
         public List<Win> MessageBoxes = new List<Win>();
 
         public VpnState State
@@ -64,37 +57,41 @@ namespace VpnKeeper
             get
             {
                 if (!Running) return VpnState.NotRunning;
-                if (Main == null || StatusLabel == null) return VpnState.NoWindow;
+                if (StatusLabel == null) return VpnState.NoWindow;
                 return Tunnel.Classify(StatusLabel.Text);
             }
         }
 
+        // Its caption follows the state: Connect, Cancel, Disconnect.
         public Win MainButton
         {
-            get
-            {
-                if (Main == null) return null;
-                return Main.Button("Connect", "Disconnect", "Cancel", "Conectar", "Desconectar", "Cancelar");
-            }
+            get { return Main == null ? null : Main.Button("Connect", "Disconnect", "Cancel", "Conectar", "Desconectar", "Cancelar"); }
         }
 
         public Win Profile
         {
             get
             {
-                if (Main == null) return null;
-                foreach (Win c in Main.Of("combobox")) return c;
+                if (Main != null) foreach (Win c in Main.Of("combobox")) return c;
                 return null;
             }
+        }
+
+        public string ButtonList()
+        {
+            List<string> seen = new List<string>();
+            if (Main != null) foreach (Win b in Main.Of("button")) seen.Add("\"" + b.Caption + "\"" + (b.Enabled ? "" : " (disabled)"));
+            return seen.Count == 0 ? "none" : string.Join(", ", seen.ToArray());
         }
     }
 
     static class Tunnel
     {
+        public static string Exe = @"C:\Program Files\SonicWall\Modern Connect Tunnel\SnwlConnect.exe";   // tests use the fake
         const string ProcessName = "SnwlConnect";
 
-        // Status label captions, English and Spanish. Order matters:
-        // "disconnected" contains "connected", "desconectado" contains "conectado".
+        // Status captions, English and Spanish. Order matters: "disconnected"
+        // contains "connected", "desconectado" contains "conectado".
         public static VpnState Classify(string status)
         {
             string s = StripMnemonic(status ?? "").Trim().ToLowerInvariant();
@@ -107,22 +104,23 @@ namespace VpnKeeper
 
         public static string StripMnemonic(string text)
         {
-            return text.Replace("&&", "").Replace("&", "").Replace("", "&");
+            return text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
         }
 
-        static bool IsStatusWord(string text)
+        public static bool Is(Win w, params string[] captions)
         {
-            return Classify(text) != VpnState.NoWindow;
+            foreach (string c in captions) if (string.Equals(w.Caption, c, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         public static Snapshot Take()
         {
             Snapshot snap = new Snapshot();
             HashSet<uint> pids = new HashSet<uint>();
+            int session = Process.GetCurrentProcess().SessionId;
             foreach (Process p in Process.GetProcessesByName(ProcessName))
             {
-                // Only our own desktop session: the agent cannot drive another user's windows.
-                if (p.SessionId == Process.GetCurrentProcess().SessionId) pids.Add((uint)p.Id);
+                if (p.SessionId == session) pids.Add((uint)p.Id);   // only this desktop's windows can be driven
                 p.Dispose();
             }
             snap.Running = pids.Count > 0;
@@ -132,28 +130,27 @@ namespace VpnKeeper
             {
                 uint pid;
                 GetWindowThreadProcessId(h, out pid);
-                // Hidden windows count too: Connect Tunnel hides its main window in
-                // the tray once connected, and its status can still be read there.
+                // Hidden WinForms windows count too: once connected, Connect Tunnel
+                // hides its main window in the tray, and its status is still readable.
                 if (pids.Contains(pid) && (IsWindowVisible(h) || ClassOf(h).StartsWith("WindowsForms")))
                     snap.Windows.Add(Describe(h, true));
                 return true;
             }, IntPtr.Zero);
 
-            // A visible main window wins over a hidden one.
-            snap.Windows.Sort(delegate(Win a, Win b) { return b.Visible.CompareTo(a.Visible); });
+            snap.Windows.Sort(delegate(Win a, Win b) { return b.Visible.CompareTo(a.Visible); });   // visible first
             foreach (Win w in snap.Windows)
             {
+                Win status = null;
+                foreach (Win s in w.Of("static")) if (Classify(s.Text) != VpnState.NoWindow) { status = s; break; }
                 int edits = 0;
                 foreach (Win e in w.Of("edit")) edits++;
-                Win ok = w.Button("OK", "Aceptar");
-                Win status = null;
-                foreach (Win s in w.Of("static")) if (IsStatusWord(s.Text)) { status = s; break; }
+                bool ok = w.Button("OK", "Aceptar") != null;
 
                 if (status != null && snap.Main == null) { snap.Main = w; snap.StatusLabel = status; }
                 else if (!w.Visible) continue;   // prompts only count while on screen
                 else if (w.Class == "#32770") snap.MessageBoxes.Add(w);
-                else if (ok != null && edits == 1) snap.OtpDialog = w;
-                else if (ok != null && edits >= 2) snap.PasswordDialog = w;
+                else if (ok && edits == 1) snap.OtpDialog = w;
+                else if (ok && edits >= 2) snap.PasswordDialog = w;
             }
             return snap;
         }
@@ -171,11 +168,10 @@ namespace VpnKeeper
                 : c.Contains("combobox") ? "combobox" : "window";
             if (withKids)
             {
-                // EnumChildWindows walks every descendant, in creation (z) order.
+                // Every descendant, in creation order. A control's own visible
+                // flag is used: inside a hidden window all of them read as hidden.
                 EnumChildWindows(h, delegate(IntPtr k, IntPtr l)
                 {
-                    // The control's own visibility, not its window's: inside a
-                    // hidden main window every control reads as invisible.
                     if ((GetWindowLong(k, GwlStyle) & WsVisible) != 0) w.Kids.Add(Describe(k, false));
                     return true;
                 }, IntPtr.Zero);
@@ -183,45 +179,65 @@ namespace VpnKeeper
             return w;
         }
 
-        public static void Start(string exe)
+        // The user box comes first; the password box is the one after a
+        // "Password"/"Contraseña" label, else the last box.
+        public static void PasswordFields(Win d, out Win userBox, out Win passBox)
         {
-            Log.Info("starting " + exe);
-            Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
+            List<Win> edits = new List<Win>(d.Of("edit"));
+            passBox = null;
+            bool afterLabel = false;
+            foreach (Win k in d.Kids)
+            {
+                if (k.Kind == "static")
+                {
+                    string t = k.Text.ToLowerInvariant();
+                    afterLabel = t.Contains("contrase") || t.Contains("password");
+                }
+                else if (k.Kind == "edit" && afterLabel && passBox == null) passBox = k;
+            }
+            if (passBox == null) passBox = edits[edits.Count - 1];
+            userBox = edits.Count > 1 && edits[0] != passBox ? edits[0] : null;
         }
 
-        // Fill a text box. Password boxes accept WM_SETTEXT from another process;
-        // they only refuse to be read.
-        public static bool SetText(Win edit, string text)
+        public static void Start()
+        {
+            Log.Info("starting Connect Tunnel");
+            try { Process.Start(new ProcessStartInfo(Exe) { UseShellExecute = true }); }
+            catch (Exception e) { Log.Error("could not start " + Exe + ": " + e.Message); }
+        }
+
+        // Password boxes accept WM_SETTEXT from another process; they only refuse to be read.
+        public static void SetText(Win edit, string text)
         {
             IntPtr r;
-            return SendMessageTimeout(edit.Handle, WmSetText, IntPtr.Zero, text, SmtoAbortIfHung, 3000, out r) != IntPtr.Zero;
+            SendMessageTimeout(edit.Handle, WmSetText, IntPtr.Zero, text, SmtoAbortIfHung, 3000, out r);
         }
 
-        // Posted, not sent: OK on the password dialog opens the next modal
-        // dialog, and a SendMessage would block until that one closed.
+        // Posted, not sent: OK on the login prompt opens the next modal dialog,
+        // and SendMessage would wait until that one closed.
         public static void Click(Win button)
         {
             PostMessage(button.Handle, BmClick, IntPtr.Zero, IntPtr.Zero);
         }
 
-        // Fallback when BM_CLICK is ignored: a mouse press and release inside the button.
-        public static void ClickMouse(Win button)
+        // For a dialog that ignored OK: a mouse press on OK, then Enter in its last box.
+        public static void Nudge(Win dialog)
         {
-            IntPtr pos = (IntPtr)((4 << 16) | 4);
-            PostMessage(button.Handle, WmLButtonDown, (IntPtr)1, pos);
-            PostMessage(button.Handle, WmLButtonUp, IntPtr.Zero, pos);
-        }
-
-        // Second fallback: Enter in a text box fires the dialog's default (OK) button.
-        public static void PressEnter(Win edit)
-        {
-            PostMessage(edit.Handle, WmKeyDown, (IntPtr)VkReturn, (IntPtr)0x001C0001);
-            PostMessage(edit.Handle, WmKeyUp, (IntPtr)VkReturn, unchecked((IntPtr)(int)0xC01C0001));
-        }
-
-        public static bool StillThere(Win w)
-        {
-            return IsWindow(w.Handle) && IsWindowVisible(w.Handle);
+            Log.Warn("dialog still open; pressing OK another way");
+            Win ok = dialog.Button("OK", "Aceptar");
+            if (ok != null)
+            {
+                IntPtr pos = (IntPtr)((4 << 16) | 4);
+                PostMessage(ok.Handle, WmLButtonDown, (IntPtr)1, pos);
+                PostMessage(ok.Handle, WmLButtonUp, IntPtr.Zero, pos);
+            }
+            Win last = null;
+            foreach (Win e in dialog.Of("edit")) last = e;
+            if (last != null)
+            {
+                PostMessage(last.Handle, WmKeyDown, (IntPtr)VkReturn, (IntPtr)0x001C0001);
+                PostMessage(last.Handle, WmKeyUp, (IntPtr)VkReturn, unchecked((IntPtr)(int)0xC01C0001));
+            }
         }
 
         static string ClassOf(IntPtr h)
@@ -245,11 +261,8 @@ namespace VpnKeeper
 
         const uint WmSetText = 0x000C, WmGetText = 0x000D, WmGetTextLength = 0x000E;
         const uint WmKeyDown = 0x0100, WmKeyUp = 0x0101, WmLButtonDown = 0x0201, WmLButtonUp = 0x0202;
-        const uint BmClick = 0x00F5;
-        const int VkReturn = 0x0D;
-        const uint SmtoAbortIfHung = 0x0002;
-        const int GwlStyle = -16;
-        const int WsVisible = 0x10000000;
+        const uint BmClick = 0x00F5, SmtoAbortIfHung = 0x0002;
+        const int VkReturn = 0x0D, GwlStyle = -16, WsVisible = 0x10000000;
 
         delegate bool EnumProc(IntPtr h, IntPtr l);
 
@@ -259,10 +272,8 @@ namespace VpnKeeper
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
-        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
-
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]

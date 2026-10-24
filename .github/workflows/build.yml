@@ -1,9 +1,8 @@
 name: build
 
-# Every push and pull request: compile, run the self-test (including a full
-# login against the fake Connect Tunnel), and keep the build as an artifact.
-# Pushes to main also refresh the "latest" pre-release; a v* tag makes a
-# proper release.
+# Every push and PR: compile and run the tests (including a full login against
+# a fake Connect Tunnel), and keep the .exe as an artifact. A v* tag also
+# publishes a release (v1.2.3-beta.1 and the like as a pre-release).
 on:
   push:
     branches: ['**']
@@ -26,37 +25,20 @@ jobs:
         with:
           fetch-depth: 0   # git describe needs the tags
 
-      - name: Build and self-test
+      - name: Build and test
         shell: pwsh
         run: ./build.ps1 -Test
 
-      - name: Package
-        id: pkg
+      - name: Version
+        id: v
         shell: pwsh
-        run: |
-          $v = (Get-Item dist/vpn-keeper.exe).VersionInfo.ProductVersion
-          $zip = "vpn-keeper-$v.zip"
-          Compress-Archive -Path dist/* -DestinationPath $zip
-          "zip=$zip" >> $env:GITHUB_OUTPUT
-          "version=$v" >> $env:GITHUB_OUTPUT
+        run: '"version=$((Get-Item dist/vpn-keeper.exe).VersionInfo.ProductVersion)" >> $env:GITHUB_OUTPUT'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vpn-keeper-${{ steps.pkg.outputs.version }}
-          path: dist/
+          name: vpn-keeper-${{ steps.v.outputs.version }}
+          path: dist/vpn-keeper.exe
           retention-days: 90
-
-      - name: Refresh the "latest" pre-release
-        if: github.ref == 'refs/heads/main'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete latest --yes --cleanup-tag 2>$null
-          $global:LASTEXITCODE = 0
-          gh release create latest "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe `
-            --prerelease --target $env:GITHUB_SHA --title "latest main (${{ steps.pkg.outputs.version }})" `
-            --notes "Built from $env:GITHUB_SHA. Replaced on every push to main."
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -64,9 +46,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # v1.2.3-beta.1, v1.2.3-rc.1 ... are pre-releases; v1.2.3 is a release.
           if ($env:GITHUB_REF_NAME -match '-') {
-            gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes --prerelease
+            gh release create $env:GITHUB_REF_NAME dist/vpn-keeper.exe --generate-notes --prerelease
           } else {
-            gh release create $env:GITHUB_REF_NAME "${{ steps.pkg.outputs.zip }}" dist/vpn-keeper.exe --generate-notes
+            gh release create $env:GITHUB_REF_NAME dist/vpn-keeper.exe --generate-notes
           }

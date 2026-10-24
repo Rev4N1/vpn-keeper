@@ -3,38 +3,36 @@ using System.IO;
 
 namespace VpnKeeper
 {
-    // One log file per user, rotated at 2 MB. Secrets are never passed in here.
+    // One log per Windows user, rotated at 2 MB. Secrets never reach it.
     static class Log
     {
-        public static bool Echo;
+        public static bool Echo;   // also print to the console
         static readonly object Gate = new object();
 
-        public static string Dir
+        public static string FilePath
         {
-            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vpn-keeper"); }
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "vpn-keeper", "vpn-keeper.log"); }
         }
 
-        public static string FilePath { get { return Path.Combine(Dir, "vpn-keeper.log"); } }
+        public static void Info(string msg) { Write("INFO ", msg, true); }
+        public static void Warn(string msg) { Write("WARN ", msg, true); }
+        public static void Error(string msg) { Write("ERROR", msg, true); }
+        public static void Debug(string msg) { Write("DEBUG", msg, false); }   // file only
 
-        public static void Info(string msg) { Write("INFO ", msg); }
-        public static void Warn(string msg) { Write("WARN ", msg); }
-        public static void Error(string msg) { Write("ERROR", msg); }
-
-        static void Write(string level, string msg)
+        static void Write(string level, string msg, bool echo)
         {
             string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + level + " " + msg;
             lock (Gate)
             {
-                if (Echo) Console.WriteLine(line);
+                if (Echo && echo) Console.WriteLine(line);
                 try
                 {
-                    Directory.CreateDirectory(Dir);
+                    Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
                     FileInfo f = new FileInfo(FilePath);
                     if (f.Exists && f.Length > 2 * 1024 * 1024)
                     {
-                        string old = FilePath + ".1";
-                        if (File.Exists(old)) File.Delete(old);
-                        File.Move(FilePath, old);
+                        File.Delete(FilePath + ".1");
+                        File.Move(FilePath, FilePath + ".1");
                     }
                     File.AppendAllText(FilePath, line + Environment.NewLine);
                 }

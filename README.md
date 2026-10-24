@@ -1,99 +1,93 @@
 # vpn-keeper
 
-Keeps a SonicWall Connect Tunnel VPN logged in on a Windows laptop at home,
-and shares it with your other machines through a small proxy. Useful when
-the company VPN only runs on one machine but you need its internal services
-from somewhere else (for example, over a WireGuard VPN into your home).
+Keeps a SonicWall Connect Tunnel VPN logged in on a Windows PC, and shares it
+with your other machines through a small proxy. Set it up once; after that it
+runs on its own and you never think about it.
+
+Useful when a company VPN only runs on one machine, but you need its internal
+services from elsewhere, for example over a home VPN into that machine.
 
 ```
- other PC ──WireGuard──▶ home router ──▶ laptop :8080 ──SonicWall VPN──▶ company network
- (browser + PAC)                         vpn-keeper.exe                   internal services
+ other PC ──▶ this PC :8080 ──Connect Tunnel VPN──▶ company network
+ (browser)    vpn-keeper                            internal sites
 ```
 
-`vpn-keeper.exe` runs on the laptop, in your Windows session, and does three things:
+What it does, unattended:
 
-1. **Logs the VPN in by itself.** It watches Connect Tunnel, and whenever the
-   VPN is down (or the server ends the session and asks again, as SMA servers
-   do every few hours), it presses Connect, types the password and the
-   one-time (TOTP) code, and checks that traffic flows again. No mouse or
-   keyboard is used, so it works with the screen locked.
-2. **Keeps the laptop awake.** Idle sleep would cut the network and the VPN.
-3. **Shares the VPN with an HTTP proxy** (port 8080) and a PAC file, so a
-   browser elsewhere sends only the internal addresses through it.
+- **Logs the VPN back in by itself** whenever it drops: presses Connect, types
+  the password, and types the current 6-digit code. It works with the screen
+  locked, and recovers from the session timeouts that SonicWall servers apply.
+- **Keeps the PC awake**, so idle sleep never cuts the VPN.
+- **Shares the VPN** through an HTTP proxy, so a browser on another machine
+  reaches the internal sites and nothing else.
+- **Restarts itself** if the agent or the proxy ever fails, and starts at every
+  logon.
 
-The VPN password and the TOTP seed stay in Windows Credential Manager on the
-laptop. They are never in the config file or the log.
+The VPN password and the one-time-code seed are kept in Windows Credential
+Manager. They are never in a file, the log, or this repository.
 
-> Automating a second factor weakens it. Use this only where your
-> organisation allows it.
+> Automating a second factor weakens it. Use this only where your organisation
+> allows it.
 
-## Using it from another machine
+## Set up (on the PC with the VPN)
 
-1. Reach the laptop's network (e.g. WireGuard into your home LAN).
-2. Set the browser's automatic proxy configuration (PAC) URL to
-   `http://<laptop>:8080/proxy.pac`:
-   - Windows (Edge, Chrome): Settings → Network & internet → Proxy →
-     *Use setup script* → On. No admin needed.
-   - Firefox: Settings → Network Settings → *Automatic proxy configuration URL*.
-3. Open the internal sites as usual; everything else stays direct.
+1. Download `vpn-keeper.exe` from [Releases](../../releases).
+2. In Connect Tunnel, pick your configuration once (so its name is selected).
+3. In PowerShell:
 
-`http://<laptop>:8080/health` shows the VPN state, the last login and the
-last error.
+   ```powershell
+   .\vpn-keeper.exe setup
+   ```
 
-## Ports
+   It asks for the configuration name, a URL that only answers through the VPN,
+   the sites to share, and your VPN password and one-time-code seed (the Base32
+   text from "can't scan the QR code?"). It then installs itself, starts, and
+   prints two commands to run once **as administrator**: a firewall rule for
+   the proxy port, and, if needed, a route so replies to your other machines
+   don't disappear into the VPN.
 
-| Where | What |
-|---|---|
-| Internet → home | nothing new (only what your WireGuard already uses) |
-| Home router | let WireGuard clients reach `<laptop>:tcp:8080` |
-| Laptop (Windows Firewall) | inbound TCP 8080 from your WireGuard subnet and LAN (admin, once) |
-| Laptop (routing) | a route for your WireGuard subnet via the home router, **if** the company VPN's routes cover it (admin, once) |
+That's it. Check it any time with `vpn-keeper status`.
 
-Details and exact commands: [docs/setup.md](docs/setup.md).
+## Use it from another machine
 
-## Quick start (on the laptop)
+Set the browser's **automatic proxy configuration (PAC)** URL to the one
+`setup` prints, e.g. `http://192.168.1.50:8080/proxy.pac`:
 
-```powershell
-copy vpn-keeper.conf.example vpn-keeper.conf   # then set profile, check_url, allow
-cmdkey /generic:vpn-keeper:vpn /user:<vpn user> /pass   # asks for the VPN password
-cmdkey /generic:vpn-keeper:otp /user:otp /pass          # paste the Base32 TOTP seed
-.\vpn-keeper.exe check      # everything found?
-.\vpn-keeper.exe otp        # same code as your authenticator app?
-.\vpn-keeper.exe login      # with the VPN disconnected: the real test
-.\vpn-keeper.exe install    # start now and at every logon
-```
+- Windows (Edge/Chrome): Settings → Network & internet → Proxy → *Use setup
+  script* → On. No admin needed.
+- Firefox: Settings → Network Settings → *Automatic proxy configuration URL*.
+
+Only the shared sites go through the proxy; everything else stays direct.
+`http://<pc>:8080/health` shows the VPN state and the last login.
+
+To reach it from outside the home network, bring that network within reach
+(e.g. a home VPN) and make sure the PC's firewall rule allows your client's
+addresses.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `vpn-keeper.exe` | run the agent (in a terminal it shows the log live; Ctrl+C stops it) |
-| `check` | config, saved credentials, Connect Tunnel state |
-| `otp` | the current one-time code, to compare with your authenticator app |
-| `login` | log the VPN in once and exit |
-| `dump` | the Connect Tunnel windows as the agent sees them (for diagnosing) |
-| `install` / `uninstall` | start at every logon (a shortcut in your Startup folder) / stop that |
-| `selftest` | built-in tests |
-| `version` | the build version |
+| `vpn-keeper setup` | set up, or change settings (Enter keeps each current value) |
+| `vpn-keeper status` | what's set, what's running, and what to fix |
+| `vpn-keeper uninstall` | stop it, remove autostart, delete the saved secrets |
+| `vpn-keeper run` | run in the window with the log on screen (for testing) |
 
-Settings: `vpn-keeper.conf` next to the .exe; see
-[vpn-keeper.conf.example](vpn-keeper.conf.example). It is git-ignored.
-Log: `%LOCALAPPDATA%\vpn-keeper\vpn-keeper.log`.
+Settings live in `vpn-keeper.conf` next to the installed `.exe`; the log is in
+`%LOCALAPPDATA%\vpn-keeper\vpn-keeper.log`.
 
-## Builds
+## Build
 
-Every push runs [CI](.github/workflows/build.yml) on Windows: it compiles,
-runs the self-test (including a full login, and a forced re-login, against a
-fake Connect Tunnel shaped like the real one), and keeps the result as a
-build artifact. Pushes to `main` also update the **latest** pre-release;
-tagging `v1.2.3` makes a release, and `v1.2.3-beta.1` a pre-release.
+Every push runs [CI](.github/workflows/build.yml) on Windows: it compiles and
+runs the tests, including a full login against a fake Connect Tunnel shaped
+like the real one. Tags like `v1.0.0` make a release, `v1.0.0-beta.1` a
+pre-release.
 
-Building locally needs only Windows (the C# compiler that ships with .NET
-Framework 4.8):
+Building needs only Windows (the C# compiler in .NET Framework 4.8, no SDK):
 
 ```powershell
 .\build.ps1          # -> dist\vpn-keeper.exe
-.\build.ps1 -Test    # plus the self-test; a fake Connect Tunnel window opens briefly
+.\build.ps1 -Test    # also run the tests (a fake window flashes briefly)
 ```
 
-More: [how it works](docs/how-it-works.md) · [troubleshooting](docs/troubleshooting.md)
+How it works inside: [docs/design.md](docs/design.md).
