@@ -137,6 +137,30 @@ namespace VpnKeeper
             return sb.ToString();
         }
 
+        // The login prompt's "change password" check box, if it has one.
+        public static Win ChangeBox(Win d)
+        {
+            foreach (Win b in d.Of("button"))
+            {
+                string c = b.Caption.ToLowerInvariant();
+                if ((c.Contains("change") || c.Contains("cambiar")) && (c.Contains("password") || c.Contains("contrase"))) return b;
+            }
+            return null;
+        }
+
+        // Ticks or clears a check box. Owner-drawn WinForms boxes don't report
+        // their state; a fresh prompt's box starts clear, so a click ticks it.
+        public static void SetChecked(Win box, bool on)
+        {
+            bool? now = null;
+            if ((GetWindowLong(box.Handle, GwlStyle) & 0xF) != BsOwnerDraw)
+            {
+                IntPtr r;
+                if (SendMessageTimeout(box.Handle, BmGetCheck, IntPtr.Zero, IntPtr.Zero, SmtoAbortIfHung, 2000, out r) != IntPtr.Zero) now = r == (IntPtr)1;
+            }
+            if (now == null ? on : now != on) Click(box);
+        }
+
         // Answers to "change your password now?", English and Spanish.
         public static readonly string[] YesCaptions = { "Yes", "Sí", "Si", "Change", "Change Password", "Change now", "Cambiar", "Cambiar contraseña", "Cambiar ahora", "OK", "Aceptar" };
         public static readonly string[] NoCaptions = { "No", "Not now", "Later", "Remind me later", "Skip", "Continue", "Cancel", "Ahora no", "Más tarde", "Recordar más tarde", "Omitir", "Continuar", "Cancelar" };
@@ -238,7 +262,7 @@ namespace VpnKeeper
                 // box, or Connect Tunnel's own, e.g. "session has been idle ... disconnected").
                 else if (edits == 0 && (w.Class == "#32770" || w.Button("OK", "Aceptar", "Close", "Cerrar") != null
                     || (w.Button(YesCaptions) != null && w.Button(NoCaptions) != null))) snap.MessageBoxes.Add(w);
-                else if (w.Button(SubmitCaptions) != null && (edits >= 3 || AsksNewPassword(w))) snap.ChangeDialog = w;   // old, new, confirm
+                else if (w.Button(SubmitCaptions) != null && (edits >= 3 || (edits != 2 && AsksNewPassword(w)))) snap.ChangeDialog = w;   // old, new, confirm; 2 boxes is the login prompt
                 else if (ok && edits == 1) snap.OtpDialog = w;
                 else if (ok && edits >= 2) snap.PasswordDialog = w;
             }
@@ -355,8 +379,8 @@ namespace VpnKeeper
 
         const uint WmSetText = 0x000C, WmGetText = 0x000D, WmGetTextLength = 0x000E;
         const uint WmKeyDown = 0x0100, WmKeyUp = 0x0101, WmLButtonDown = 0x0201, WmLButtonUp = 0x0202;
-        const uint BmClick = 0x00F5, SmtoAbortIfHung = 0x0002, WmCommand = 0x0111;
-        const int BnClicked = 0;
+        const uint BmClick = 0x00F5, BmGetCheck = 0x00F0, SmtoAbortIfHung = 0x0002, WmCommand = 0x0111;
+        const int BnClicked = 0, BsOwnerDraw = 0xB;
         const int VkReturn = 0x0D, GwlStyle = -16, WsVisible = 0x10000000;
 
         delegate bool EnumProc(IntPtr h, IntPtr l);

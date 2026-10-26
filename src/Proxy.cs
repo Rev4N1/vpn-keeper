@@ -188,20 +188,18 @@ namespace VpnKeeper
         // proves it is you, not just anyone allowed to use the proxy.
         static string PasswordPage(string note, string asked)
         {
-            return "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width\">"
-                + "<title>vpn-keeper password</title><style>body{font:16px sans-serif;max-width:26em;margin:2em auto;padding:0 1em}"
-                + "label{display:block;margin:.8em 0 .2em}input{width:100%;padding:.4em;font:inherit;box-sizing:border-box}"
-                + "button{margin-top:1.2em;padding:.5em 1.2em;font:inherit}p.n{padding:.6em;background:#eee}p.a{padding:.6em;background:#fd8;font-weight:bold}</style></head><body>"
-                + "<h1>New VPN password</h1>"
-                + (note.Length > 0 ? "<p class=n>" + WebUtility.HtmlEncode(note) + "</p>" : "")
-                + (asked.Length > 0 ? "<p class=a>The VPN is asking for a new password: " + WebUtility.HtmlEncode(asked) + "</p>" : "")
-                + "<p>The current password stays in use. vpn-keeper waits, and when the VPN asks for a password change, it changes the password to this one. If the current password stops working (changed elsewhere), it switches to this one.</p>"
-                + "<form method=post autocomplete=off>"
-                + "<label>Current 6-digit code from your authenticator<input name=code inputmode=numeric maxlength=6 required></label>"
-                + "<label>New password<input name=password type=password required></label>"
-                + "<label>New password again<input name=confirm type=password required></label>"
-                + "<label style=\"display:flex;gap:.5em;align-items:center\"><input name=force type=checkbox style=\"width:auto\">Force: reconnect now, so the VPN can ask straight away</label>"
-                + "<button>Save</button></form><p><a href=/health>health</a></p></body></html>";
+            // As plain as /health: monospace, no layout.
+            return "<!doctype html><html><head><meta charset=utf-8><title>vpn-keeper password</title></head>"
+                + "<body style=\"font-family:monospace;white-space:pre-line\">vpn-keeper\n"
+                + (asked.Length > 0 ? "VPN asking for a new password: " + WebUtility.HtmlEncode(asked) + "\n" : "")
+                + (note.Length > 0 ? "\n" + WebUtility.HtmlEncode(note) + "\n" : "")
+                + "\nnew VPN password: it waits until the VPN asks for a change, or the current one stops working.\n"
+                + "<form method=post autocomplete=off style=\"white-space:normal\">"
+                + "code from your authenticator: <input name=code inputmode=numeric maxlength=6 size=8 required><br>"
+                + "new password: <input name=password type=password required><br>"
+                + "new password again: <input name=confirm type=password required><br>"
+                + "<label><input name=force type=checkbox> force: reconnect now and tick \"change password\" in the login prompt</label><br>"
+                + "<button>save</button></form>\n<a href=/health>health</a></body></html>";
         }
 
         // An application/x-www-form-urlencoded body, at most 4 KB.

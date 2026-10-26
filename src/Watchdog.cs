@@ -286,6 +286,22 @@ namespace VpnKeeper
                         if (!string.IsNullOrEmpty(user) && userBox != null && userBox.Text.Trim() != user) Tunnel.SetText(userBox, user);
                         Tunnel.SetText(passBox, password);
                         Log.Info("password entered");
+
+                        // Force: tick the prompt's "change password" box, so the VPN asks
+                        // for the new one right after this login. Otherwise leave it clear.
+                        Dump(d, "login-prompt");
+                        bool tick = forced && QueuedPassword().Length > 0;
+                        Win box = Tunnel.ChangeBox(d);
+                        if (box != null)
+                        {
+                            Tunnel.SetChecked(box, tick);
+                            if (tick) Log.Info("forced: ticked '" + box.Caption + "'");
+                        }
+                        else if (tick)
+                        {
+                            Log.Warn("forced, but the login prompt has no change-password box (its layout is in dumps)");
+                            Status.Notice("forced: no change-password box in the login prompt; the new password stays queued");
+                        }
                     }
                     else
                     {

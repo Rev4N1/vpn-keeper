@@ -267,7 +267,7 @@ namespace VpnKeeper
                 {
                     string page = Raw(p.Port, "GET /password HTTP/1.1", out code);
                     Yes(page.Contains("<form") && page.Contains("name=force type=checkbox") && code == 200, "password page served, with the Force tick");
-                    Yes(page.Contains("The VPN is asking for a new password"), "banner while the VPN asks");
+                    Yes(page.Contains("VPN asking for a new password: the VPN requires"), "banner while the VPN asks");
                     Yes(Raw(p.Port, "GET /health HTTP/1.1", out code).Contains("/password"), "health links to it");
                     string good = Totp.Code(Totp.Base32Decode(Seed), Totp.Step(DateTime.UtcNow, 30), 6);
                     string bad = good == "000000" ? "111111" : "000000";
@@ -347,6 +347,7 @@ namespace VpnKeeper
                 until = DateTime.Now.AddSeconds(90);
                 while (DateTime.Now < until && !(saved == NewPassword && Tunnel.Take().State == VpnState.Up && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 Eq(NewPassword, saved, "forced: password changed on the VPN, then saved");
+                Yes(Tunnel.Take().Main.Text.Contains("via the login box"), "forced: changed by ticking the login prompt's box, not by an offer");
                 Eq("", queued, "queue cleared");
                 Yes(Tunnel.Take().State == VpnState.Up, "connected after the change");
 

@@ -76,9 +76,9 @@ The new password **waits**; the current one stays in use until:
 - or the current password is refused (you changed it elsewhere): vpn-keeper
   switches to the new one.
 
-Tick **Force** to reconnect right away, so the VPN gets its chance to ask
-now instead of at the next login. While the VPN is asking, the page shows a
-banner, and `/health` shows `VPN asking for a new password` and `new password
+Tick **force** to change it now: vpn-keeper reconnects and ticks *Change
+password* in the login prompt, so the VPN asks for the new one right after
+that login. While the VPN is asking, the page says so, and `/health` shows `VPN asking for a new password` and `new password
 queued`. With nothing queued, an offer is declined and the login goes on;
 a required change stops logins until you queue one.
 

@@ -97,9 +97,9 @@ namespace VpnKeeper
             if (PathEquals(here, Config.InstalledExe)) { Console.WriteLine("run update from the new vpn-keeper.exe you downloaded, not the installed one"); return 2; }
             if (!File.Exists(Config.InstalledExe)) { Console.WriteLine("not installed yet; run: vpn-keeper setup"); return 1; }
             Install(here);
-            Console.WriteLine(Agent.Running()
-                ? "The running vpn-keeper restarts on " + BuildInfo.Version + " within a minute (check: vpn-keeper status)."
-                : "vpn-keeper is not running in this session; it starts with " + BuildInfo.Version + " at the next logon.");
+            // Over SSH the agent runs in another session, so it can't be seen from here.
+            Console.WriteLine("A running vpn-keeper (v1.0.1 or later) restarts on " + BuildInfo.Version + " within a minute; check /health."
+                + " If none is running, it starts with it at the next logon.");
             return 0;
         }
 

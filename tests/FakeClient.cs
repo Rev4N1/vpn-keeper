@@ -104,16 +104,19 @@ namespace VpnKeeper.Fake
         void Authenticate()
         {
             // A wrong password gets the prompt again, up to three times.
+            bool changeRequested = false;
             for (int tries = 1; ; tries++)
                 using (PasswordForm p = new PasswordForm())
                 {
                     if (p.ShowDialog(this) != DialogResult.OK) { SetState("Disconnected", "&Connect"); return; }
+                    changeRequested = p.ChangeRequested;
                     if (p.Password == password) break;
                     if (tries == 3) { SetState("Disconnected", "&Connect"); return; }
                 }
             using (OtpForm o = new OtpForm())
                 if (o.ShowDialog(this) != DialogResult.OK || !CodeOk(o.Code)) { SetState("Disconnected", "&Connect"); return; }
-            if (MessageBox.Show(this, "Your password will expire in 5 days. Do you want to change it now?", "Password expiring", MessageBoxButtons.YesNo) == DialogResult.Yes)
+            // The login box ticked: straight to the change form; else the offer.
+            if (changeRequested || MessageBox.Show(this, "Your password will expire in 5 days. Do you want to change it now?", "Password expiring", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 using (ChangeForm c = new ChangeForm())
                 {
                     if (c.ShowDialog(this) != DialogResult.OK) { SetState("Disconnected", "&Connect"); return; }
@@ -124,6 +127,7 @@ namespace VpnKeeper.Fake
                         return;
                     }
                     password = c.New;
+                    if (changeRequested) Text = "Connect Tunnel - password changed via the login box";
                 }
             SetState("Connected", "&Disconnect");
             Hide();   // once connected, the real client goes to the tray
@@ -141,7 +145,9 @@ namespace VpnKeeper.Fake
     class PasswordForm : Form
     {
         readonly TextBox pass = new TextBox();
+        readonly CheckBox change = new CheckBox { Text = "Change password", AutoSize = true };
         public string Password { get { return pass.Text; } }
+        public bool ChangeRequested { get { return change.Checked; } }
 
         public PasswordForm()
         {
@@ -155,9 +161,10 @@ namespace VpnKeeper.Fake
             pass.Location = new Point(160, 106);
             pass.Width = 280;
             pass.UseSystemPasswordChar = true;
+            change.Location = new Point(160, 150);
             Button ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, Location = new Point(250, 210) };
             Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(360, 210) };
-            Controls.AddRange(new Control[] { title, userLabel, user, passLabel, pass, ok, cancel });
+            Controls.AddRange(new Control[] { title, userLabel, user, passLabel, pass, change, ok, cancel });
             AcceptButton = ok;
             CancelButton = cancel;
         }

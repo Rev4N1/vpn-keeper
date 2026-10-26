@@ -57,7 +57,12 @@ Details that matter in practice:
   the password changing or expiring) is answered Yes only with one queued. A
   change prompt shown again for the same password drops it. Force is the
   entry's user name `force` (so `vpn-keeper password` in another process can
-  set it): the agent clears it and disconnects, so the next login is now.
+  set it): the agent clears it and disconnects, so the next login is now,
+  and in that login ticks the prompt's "change password" check box (a button
+  whose caption has change/cambiar and password/contraseña). Its state is read
+  with `BM_GETCHECK`, except on owner-drawn boxes, which start clear. Other
+  logins leave it clear.
+- **Dumps.** The login prompt is dumped too, once per agent run.
 - **Dumps.** Each distinct notice, change prompt, or window blocking Connect
   is written to `dumps\` beside the log: captions, classes and states, never
   box contents.
