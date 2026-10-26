@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 
 namespace VpnKeeper
 {
@@ -100,6 +101,12 @@ namespace VpnKeeper
             // Over SSH the agent runs in another session, so it can't be seen from here.
             Console.WriteLine("A running vpn-keeper (v1.0.1 or later) restarts on " + BuildInfo.Version + " within a minute; check /health."
                 + " If none is running, it starts with it at the next logon.");
+            // Older supervisors leave a moment with nothing blocking sleep while the
+            // agent restarts, and a long-idle PC sleeps at once. Block it from here
+            // (it counts for the whole PC) until the restart is surely through.
+            Agent.BlockSleep();
+            Console.WriteLine("Keeping the PC awake for 90 s while it restarts...");
+            Thread.Sleep(90000);
             return 0;
         }
 

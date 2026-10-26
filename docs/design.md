@@ -72,7 +72,11 @@ Details that matter in practice:
 - **Updating.** A running `.exe` can be renamed but not overwritten:
   `update` moves it to `.old` and copies the new one in. The agent sees its
   file change and exits; the supervisor sees it too and starts a new
-  supervisor from the new file, in the same desktop session.
+  supervisor from the new file, in the same desktop session. Sleep stays
+  blocked throughout: the supervisor blocks it as well as the agent, the old
+  supervisor lingers 15 s after starting the new one, and `update` itself
+  blocks it for 90 s (for older supervisors, which left a gap; a long-idle PC
+  sleeps the moment nothing blocks it).
 - **Language.** English and Spanish captions are both recognised.
 
 `vpn-keeper status` prints what the agent currently sees, for when a Connect

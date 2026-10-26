@@ -16,6 +16,15 @@ namespace VpnKeeper
         static extern uint SetThreadExecutionState(uint flags);
         const uint EsContinuous = 0x80000000, EsSystemRequired = 0x00000001;
 
+        // Idle sleep would cut the network and the VPN. This blocks it while the
+        // calling thread's process runs (like a video player does); the screen
+        // may still lock. The supervisor holds it too, so an agent restart is
+        // never a gap: on a long-idle PC, Windows sleeps the moment none is held.
+        public static void BlockSleep()
+        {
+            if (SetThreadExecutionState(EsContinuous | EsSystemRequired) == 0) Log.Warn("could not block idle sleep");
+        }
+
         public static bool Running()
         {
             System.Threading.Mutex m;
@@ -29,10 +38,7 @@ namespace VpnKeeper
             Log.Info("vpn-keeper " + BuildInfo.Version + " starting");
             foreach (string p in cfg.Problems()) Log.Error("config: " + p + " (run vpn-keeper setup)");
 
-            // Idle sleep would cut the network and the VPN. This blocks it while
-            // the agent runs (like a video player does); the screen may still lock.
-            if (SetThreadExecutionState(EsContinuous | EsSystemRequired) == 0) Log.Warn("could not block idle sleep");
-
+            BlockSleep();
             Proxy proxy = new Proxy(cfg.Port, new Rules(cfg.Clients), new Rules(cfg.Allow), Watchdog.Status.Report);
             proxy.SavePassword = Watchdog.SavePassword;
             proxy.PasswordAsked = Watchdog.Status.Asking;

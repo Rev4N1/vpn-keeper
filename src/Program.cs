@@ -69,6 +69,7 @@ namespace VpnKeeper
             {
                 if (!created) return 0;   // already running in this session
                 Log.Info("supervisor started");
+                Agent.BlockSleep();
                 while (true)
                 {
                     // Nothing in here may throw out of the loop, or the agent
@@ -90,6 +91,7 @@ namespace VpnKeeper
             // The mutex is gone now, so the new supervisor can take over.
             Log.Info("supervisor restarting on the new vpn-keeper.exe");
             Process.Start(new ProcessStartInfo(exe, "start") { UseShellExecute = false, CreateNoWindow = true });
+            Thread.Sleep(15000);   // keep blocking sleep until the new one blocks it too
             return 0;
         }
 
