@@ -29,18 +29,39 @@ namespace VpnKeeper
 
         public static bool Running()
         {
-            System.Threading.Mutex m;
-            if (!System.Threading.Mutex.TryOpenExisting(Mutex, out m)) return false;
-            m.Dispose();
-            return true;
+            try
+            {
+                System.Threading.Mutex m;
+                if (!System.Threading.Mutex.TryOpenExisting(Mutex, out m)) return false;
+                m.Dispose();
+                return true;
+            }
+            catch (UnauthorizedAccessException) { return false; }
         }
 
-        public static void Run(Config cfg)
+        public static void Run()
         {
             Log.Info("vpn-keeper " + BuildInfo.Version + " starting");
+
+            // Block sleep before anything can fail: an unattended PC must not
+            // doze off because the config needs a fix.
+            BlockSleep();
+            PruneDumps();
+
+            // A bad config must not kill the agent (the supervisor would restart
+            // it into the same error every ten seconds). Wait, and pick up a fix.
+            Config cfg = null;
+            while (cfg == null)
+            {
+                try { cfg = Config.Load(); }
+                catch (Exception e)
+                {
+                    Log.Error("config: " + e.Message + " (fix " + Config.FilePath + "; retrying in 60 s)");
+                    Thread.Sleep(60000);
+                }
+            }
             foreach (string p in cfg.Problems()) Log.Error("config: " + p + " (run vpn-keeper setup)");
 
-            BlockSleep();
             Proxy proxy = new Proxy(cfg.Port, new Rules(cfg.Clients), new Rules(cfg.Allow), Watchdog.Status.Report);
             proxy.SavePassword = Watchdog.SavePassword;
             proxy.PasswordAsked = Watchdog.Status.Asking;
@@ -48,6 +69,7 @@ namespace VpnKeeper
 
             // A pass takes 2 minutes at most (a login), so 10 minutes without one
             // means the agent is stuck: exit, and the supervisor starts a fresh one.
+            Interlocked.Exchange(ref lastPass, DateTime.UtcNow.Ticks);   // the config wait above is not a stuck pass
             new Thread(delegate()
             {
                 while (true)
@@ -90,6 +112,25 @@ namespace VpnKeeper
         {
             try { FileInfo f = new FileInfo(path); return f.Length + "@" + f.LastWriteTimeUtc.Ticks; }
             catch (IOException) { return ""; }
+            catch (UnauthorizedAccessException) { return ""; }
+        }
+
+        // Dumps are tiny but one is written for each distinct window; over
+        // months an unattended PC would collect thousands. Keep the recent ones.
+        static void PruneDumps()
+        {
+            try
+            {
+                DirectoryInfo dir = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(Log.FilePath), "dumps"));
+                if (!dir.Exists) return;
+                FileInfo[] files = dir.GetFiles("*.txt");
+                Array.Sort(files, delegate(FileInfo a, FileInfo b) { return b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc); });
+                DateTime old = DateTime.UtcNow.AddDays(-30);
+                for (int i = 0; i < files.Length; i++)
+                    if (i >= 50 || files[i].LastWriteTimeUtc < old)
+                        try { files[i].Delete(); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            catch (Exception e) { Log.Debug("could not tidy the dumps: " + e.Message); }
         }
     }
 }

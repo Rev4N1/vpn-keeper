@@ -18,15 +18,20 @@ namespace VpnKeeper
     //   /password    a form to save a new VPN password (needs a current one-time code)
     class Proxy
     {
+        const int MaxConnections = 128;   // a stuck or hostile client cannot exhaust threads
+
         readonly int port;
         readonly Rules clients, allow;
         readonly Func<string> health;
+        readonly SemaphoreSlim slots = new SemaphoreSlim(MaxConnections);
+        static readonly Encoding HeadEncoding = Encoding.GetEncoding(28591);   // HTTP heads are 8-bit, not ASCII
 
         // Checks and saves a new password from the form; returns what to show.
         public delegate string PasswordSaver(IPAddress from, string code, string password, string confirm, bool force);
         public PasswordSaver SavePassword;
         public Func<string> PasswordAsked = delegate { return ""; };   // the VPN asking for a new password, for the page's banner
         TcpListener listener;
+        string bindAddress = "0.0.0.0";
         volatile bool stopped;
 
         public Proxy(int port, Rules clients, Rules allow, Func<string> health)
@@ -43,6 +48,7 @@ namespace VpnKeeper
         // listener alive: if it ever fails it is re-created.
         public void Start(string address = "0.0.0.0")
         {
+            bindAddress = address;
             listener = new TcpListener(IPAddress.Parse(address), port);
             listener.Start(64);
             Log.Info("proxy on " + listener.LocalEndpoint + "; clients " + clients + "; allow " + allow);
@@ -59,11 +65,8 @@ namespace VpnKeeper
         {
             while (!stopped)
             {
-                try
-                {
-                    TcpClient c = listener.AcceptTcpClient();
-                    new Thread(delegate() { Serve(c); }) { IsBackground = true, Name = "proxy-conn" }.Start();
-                }
+                TcpClient c;
+                try { c = listener.AcceptTcpClient(); }
                 catch (Exception e)
                 {
                     if (stopped) return;
@@ -72,10 +75,33 @@ namespace VpnKeeper
                     try
                     {
                         listener.Stop();
-                        listener = new TcpListener(((IPEndPoint)listener.LocalEndpoint).Address, port);
+                        listener = new TcpListener(IPAddress.Parse(bindAddress), port);
                         listener.Start(64);
+                        Log.Info("proxy listener restarted on " + listener.LocalEndpoint);
                     }
                     catch (Exception again) { Log.Warn("proxy restart failed: " + again.Message); }
+                    continue;
+                }
+
+                if (!slots.Wait(0))
+                {
+                    // Over the cap: answer and close rather than queueing work
+                    // that could keep the proxy from serving anyone.
+                    Log.Warn("proxy: too many connections; refusing one");
+                    try { Send(c.GetStream(), "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); }
+                    catch (Exception) { }
+                    c.Close();
+                    continue;
+                }
+                try
+                {
+                    new Thread(delegate() { try { Serve(c); } finally { slots.Release(); } }) { IsBackground = true, Name = "proxy-conn" }.Start();
+                }
+                catch (Exception e)
+                {
+                    slots.Release();
+                    try { c.Close(); } catch (Exception) { }
+                    Log.Warn("proxy could not start a connection thread: " + e.Message);
                 }
             }
         }
@@ -110,7 +136,7 @@ namespace VpnKeeper
                 return;
             }
             int headEnd = IndexOf(buf, len, "\r\n\r\n");
-            string[] lines = Encoding.ASCII.GetString(buf, 0, headEnd).Split(new[] { "\r\n" }, StringSplitOptions.None);
+            string[] lines = HeadEncoding.GetString(buf, 0, headEnd).Split(new[] { "\r\n" }, StringSplitOptions.None);
             string[] first = lines[0].Split(' ');
             if (first.Length != 3) { Reply(cs, 400, "Bad request line.\n"); return; }
             string method = first[0], target = first[1], version = first[2];
@@ -179,7 +205,14 @@ namespace VpnKeeper
                 if (method == "POST")
                 {
                     Dictionary<string, string> f = Form(cs, head, buf, headEnd, len);
-                    note = SavePassword(from, Field(f, "code"), Field(f, "password"), Field(f, "confirm"), Field(f, "force").Length > 0);
+                    try { note = SavePassword(from, Field(f, "code"), Field(f, "password"), Field(f, "confirm"), Field(f, "force").Length > 0); }
+                    catch (Exception e)
+                    {
+                        // A failure to write Credential Manager must not leave the
+                        // browser with a dropped connection and no explanation.
+                        Log.Error("password page: " + e.Message);
+                        note = "Could not save it: " + e.Message;
+                    }
                 }
                 Reply(cs, 200, PasswordPage(note, PasswordAsked()), "text/html; charset=utf-8");
             }
@@ -237,7 +270,13 @@ namespace VpnKeeper
 
         static void Pump(NetworkStream client, NetworkStream upstream)
         {
-            Thread up = new Thread(delegate() { Copy(client, upstream); }) { IsBackground = true, Name = "proxy-up" };
+            // An exception here must never escape a thread: in .NET Framework an
+            // unhandled one ends the whole process, including the VPN watchdog.
+            Thread up = new Thread(delegate()
+            {
+                try { Copy(client, upstream); }
+                catch (Exception e) { Log.Debug("proxy pump: " + e.Message); }
+            }) { IsBackground = true, Name = "proxy-up" };
             up.Start();
             Copy(upstream, client);
             up.Join(30000);
@@ -253,6 +292,7 @@ namespace VpnKeeper
                 while ((n = from.Read(buf, 0, buf.Length)) > 0) to.Write(buf, 0, n);
             }
             catch (IOException) { }
+            catch (SocketException) { }
             catch (ObjectDisposedException) { }
             to.Close();
             from.Close();
@@ -285,7 +325,8 @@ namespace VpnKeeper
 
         static void Reply(NetworkStream s, int code, string body, string type = "text/plain; charset=utf-8")
         {
-            string reason = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found" : "Bad Gateway";
+            string reason = code == 200 ? "OK" : code == 400 ? "Bad Request" : code == 403 ? "Forbidden" : code == 404 ? "Not Found"
+                : code == 503 ? "Service Unavailable" : "Bad Gateway";
             byte[] b = Encoding.UTF8.GetBytes(body);
             Send(s, "HTTP/1.1 " + code + " " + reason + "\r\nContent-Type: " + type + "\r\nContent-Length: " + b.Length
                 + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
@@ -306,7 +347,7 @@ namespace VpnKeeper
 
         static void Send(Stream s, string text)
         {
-            byte[] b = Encoding.ASCII.GetBytes(text);
+            byte[] b = HeadEncoding.GetBytes(text);
             s.Write(b, 0, b.Length);
         }
 

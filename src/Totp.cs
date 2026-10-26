@@ -52,6 +52,9 @@ namespace VpnKeeper
                     outb[n++] = (byte)((buffer >> bits) & 0xff);
                 }
             }
+            // A one-character "seed" decodes to no bytes at all: reject it here
+            // instead of silently generating codes from an empty key.
+            if (outb.Length == 0) throw new FormatException("the OTP seed is too short");
             return outb;
         }
     }

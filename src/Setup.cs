@@ -68,7 +68,7 @@ namespace VpnKeeper
             InstallAutostart();
             Restart();
 
-            // 8. The firewall rule and route need admin. Offer to apply them
+            // 8. The firewall rule needs admin. Offer to apply it
             //    through one UAC prompt; always show the manual commands too.
             Console.WriteLine();
             ApplyAdminSteps(cfg, lan);
@@ -86,8 +86,9 @@ namespace VpnKeeper
             if (p.Length == 0 || ReadHidden() != p) { Console.WriteLine("  empty or they differ; nothing saved"); return 1; }
             Console.Write("Force: reconnect now, so the VPN can ask straight away? [y/N]: ");
             string a = Console.ReadLine();
-            Console.WriteLine(Watchdog.Store(p, a != null && a.Trim().ToLowerInvariant().StartsWith("y"), "the command line"));
-            return 0;
+            string note = Watchdog.Store(p, a != null && a.Trim().ToLowerInvariant().StartsWith("y"), "the command line");
+            Console.WriteLine(note);
+            return note.StartsWith("Queued", StringComparison.Ordinal) ? 0 : 1;
         }
 
         // Puts this .exe in place of the installed one, settings and secrets
@@ -99,7 +100,7 @@ namespace VpnKeeper
             if (!File.Exists(Config.InstalledExe)) { Console.WriteLine("not installed yet; run: vpn-keeper setup"); return 1; }
             Install(here);
             // Over SSH the agent runs in another session, so it can't be seen from here.
-            Console.WriteLine("A running vpn-keeper (v1.0.1 or later) restarts on " + BuildInfo.Version + " within a minute; check /health."
+            Console.WriteLine("A running vpn-keeper restarts on " + BuildInfo.Version + " within a couple of minutes; check /health."
                 + " If none is running, it starts with it at the next logon.");
             // Older supervisors leave a moment with nothing blocking sleep while the
             // agent restarts, and a long-idle PC sleeps at once. Block it from here
@@ -110,19 +111,47 @@ namespace VpnKeeper
             return 0;
         }
 
-        // A running .exe can't be overwritten but can be renamed: move it aside,
-        // and the running copies notice the new file and restart on it.
+        // A running .exe can't be overwritten but can be renamed: copy the new
+        // one beside it first, then move it in. A supervisor or agent that
+        // notices the change must never see a half-written .exe.
         static void Install(string from)
         {
-            string target = Config.InstalledExe, old = target + ".old";
+            string target = Config.InstalledExe, old = target + ".old", fresh = target + ".new";
             Directory.CreateDirectory(Config.InstallDir);
+            try { File.Delete(fresh); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            File.Copy(from, fresh);
+            // File.Copy keeps the source's (possibly older) timestamp. The running
+            // copies detect an update by this value, so make it unmistakable: a
+            // second update to the same-size .exe must still change the stamp.
+            DateTime stamp = DateTime.UtcNow;
+            try
+            {
+                if (File.Exists(target))
+                {
+                    DateTime installed = File.GetLastWriteTimeUtc(target);
+                    if (stamp <= installed) stamp = installed.AddSeconds(2);
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            File.SetLastWriteTimeUtc(fresh, stamp);
             if (File.Exists(target))
             {
                 try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }   // still running from the last update
                 if (File.Exists(old)) old = target + "." + DateTime.Now.ToString("yyyyMMddHHmmss") + ".old";
                 File.Move(target, old);
             }
-            File.Copy(from, target);
+            try
+            {
+                File.Move(fresh, target);
+            }
+            catch
+            {
+                // Put the old .exe back rather than leave the PC with none.
+                if (!File.Exists(target) && File.Exists(old))
+                    try { File.Move(old, target); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                throw;
+            }
             Console.WriteLine("installed " + BuildInfo.Version + " to " + target);
         }
 
@@ -168,12 +197,11 @@ namespace VpnKeeper
         public static int Uninstall()
         {
             if (File.Exists(ShortcutPath)) { File.Delete(ShortcutPath); Console.WriteLine("autostart removed"); }
-            foreach (Process p in Process.GetProcessesByName("vpn-keeper"))
-                if (p.Id != Process.GetCurrentProcess().Id) { try { p.Kill(); } catch { } }
-            Console.WriteLine("agent stopped");
+            Console.WriteLine(StopAll() ? "agent stopped" : "agent may still be running (see Task Manager)");
             Credentials.Delete(Credentials.Vpn);
             Credentials.Delete(Credentials.Otp);
             Credentials.Delete(Credentials.Change);
+            Credentials.Delete(Credentials.Held);
             Console.WriteLine("saved VPN password and TOTP seed removed");
 
             // The firewall rule needs admin to remove, same as to create.
@@ -217,15 +245,16 @@ namespace VpnKeeper
         // Returns false when nothing new was saved.
         static bool SaveSecret(string label, string target, bool askUser)
         {
-            string user = "otp", current;
+            string user = "", current;
             bool have = HasSecret(target);
             Console.Write("\n" + label + (have ? " (Enter keeps the saved one): " : ": "));
             if (askUser)
             {
-                Console.Write("\n  VPN username" + (TryUser(target, out current) && current.Length > 0 ? " [" + current + "]" : "") + ": ");
+                if (!TryUser(target, out current) || current == null) current = "";
+                Console.Write("\n  VPN username" + (current.Length > 0 ? " [" + current + "]" : "") + ": ");
                 string u = Console.ReadLine();
                 if (u != null && u.Trim().Length > 0) user = u.Trim();
-                else if (TryUser(target, out current) && current.Length > 0) user = current;
+                else user = current;
                 Console.Write("  password (typing hidden): ");
             }
             string secret = ReadHidden();
@@ -246,7 +275,7 @@ namespace VpnKeeper
                 Console.Write("  again, to confirm: ");
                 if (ReadHidden() != secret) { Console.WriteLine("  they differ; not saved"); return false; }
             }
-            Credentials.Write(target, user, secret);
+            Credentials.Write(target, askUser ? user : "otp", secret);
             Console.WriteLine("  saved");
             return true;
         }
@@ -305,10 +334,33 @@ namespace VpnKeeper
 
         static void Restart()
         {
-            foreach (Process p in Process.GetProcessesByName("vpn-keeper"))
-                if (p.Id != Process.GetCurrentProcess().Id) { try { p.Kill(); } catch { } }
+            StopAll();
             Process.Start(new ProcessStartInfo(ShortcutPath) { UseShellExecute = true });
             Console.WriteLine("agent started");
+        }
+
+        // A supervisor that is still alive can restart the agent between two
+        // kills, so keep killing until none is left (or give up after 5 s).
+        static bool StopAll()
+        {
+            for (int pass = 0; pass < 20; pass++)
+            {
+                bool left = false;
+                foreach (Process p in Process.GetProcessesByName("vpn-keeper"))
+                    using (p)
+                    {
+                        if (p.Id == Process.GetCurrentProcess().Id) continue;
+                        try
+                        {
+                            if (!p.HasExited) { left = true; p.Kill(); }   // still there if the kill is refused
+                        }
+                        catch (InvalidOperationException) { }
+                        catch (System.ComponentModel.Win32Exception) { }
+                    }
+                if (!left) return true;
+                Thread.Sleep(250);
+            }
+            return false;
         }
 
         static void ApplyAdminSteps(Config cfg, Lan lan)

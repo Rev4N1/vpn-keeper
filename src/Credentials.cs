@@ -11,6 +11,7 @@ namespace VpnKeeper
         public const string Vpn = "vpn-keeper:vpn";   // user + password
         public const string Otp = "vpn-keeper:otp";   // the Base32 seed
         public const string Change = "vpn-keeper:change";   // a new password to change to when the VPN offers; empty = none
+        public const string Held = "vpn-keeper:held";   // hash of a password the VPN refused, so a restart cannot retry it
 
         const int TypeGeneric = 1, PersistLocalMachine = 2;
 

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 
 namespace VpnKeeper
@@ -28,13 +30,16 @@ namespace VpnKeeper
         static long lastOtpStep = -1;
         static DateTime noWindowSince = DateTime.MaxValue, busySince = DateTime.MaxValue;
         static string heldPassword;     // the saved password the VPN refused; no login until it changes
+        static bool heldLoaded;         // whether the persisted hold above has been read
         static string changeSent;       // the queued password last typed into a change prompt
         static bool oldRefused;         // a notice said the saved password is wrong; switch to the queued one
         static bool forced;             // this login was forced from /password
+        static string lastConnectProblem;   // avoid repeating the same warning every pass
 
         // One pass of the agent loop; returns the seconds until the next.
         public static int Tick(Config cfg)
         {
+            LoadHeld();   // a refusal from before a restart must stop the very first login
             Snapshot snap = Tunnel.Take();
             VpnState st = snap.State;
             Status.Set(st);
@@ -44,6 +49,30 @@ namespace VpnKeeper
             // A notice left open (the server's idle timeout shows one) keeps the
             // main window modal-blocked, so Connect would never respond: close it first.
             if (Dismiss(snap)) return 2;
+
+            // Outside the allowed hours: keep the VPN down. Cancel any prompt
+            // (including a required password change), and disconnect if it is
+            // up; never start a login, even with a queued password.
+            if (!Schedule.Parse(cfg.Hours).Active(DateTime.Now))
+            {
+                Win prompt = snap.ChangeDialog ?? snap.PasswordDialog ?? snap.OtpDialog;
+                Win cancel = prompt == null ? null : prompt.Button("Cancel", "Cancelar");
+                bool acted = false;
+                if (cancel != null)
+                {
+                    Tunnel.Click(cancel);
+                    if (prompt == snap.ChangeDialog) Status.Asking("");
+                    acted = true;
+                }
+                Win b = snap.MainButton;
+                if (st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
+                {
+                    Log.Info("outside the allowed hours (" + cfg.Hours + "); disconnecting");
+                    Tunnel.Click(b);
+                    acted = true;
+                }
+                return acted ? 5 : 60;
+            }
 
             // The VPN asks for a new password. With one queued on /password, the
             // login fills it in. Without, that is the user's to choose: leave the
@@ -65,21 +94,6 @@ namespace VpnKeeper
                     if (cancel != null) { Log.Info("new password saved; closing the change prompt"); Tunnel.Click(cancel); return 5; }
                 }
                 return 10;
-            }
-
-            // Outside the allowed hours: keep the VPN down. Cancel any login
-            // prompt, and disconnect if it is up; never start a login.
-            if (!Schedule.Parse(cfg.Hours).Active(DateTime.Now))
-            {
-                Win cancel = (snap.PasswordDialog ?? snap.OtpDialog) == null ? null : (snap.PasswordDialog ?? snap.OtpDialog).Button("Cancel", "Cancelar");
-                if (cancel != null) Tunnel.Click(cancel);
-                Win b = snap.MainButton;
-                if (st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
-                {
-                    Log.Info("outside the allowed hours (" + cfg.Hours + "); disconnecting");
-                    Tunnel.Click(b);
-                }
-                return 60;
             }
 
             // "Force" on /password: reconnect now, so the login gives the VPN its
@@ -164,6 +178,7 @@ namespace VpnKeeper
         // prompt is already open and only needs answering.
         static bool Login(Config cfg, bool pressConnect)
         {
+            LoadHeld();
             if (cfg.Profile.Length == 0) { Fail("no profile set (run vpn-keeper setup)", true); return false; }
             string user, password, otpUser, seed;
             if (!ReadCredential(Credentials.Vpn, out user, out password)) { Fail("no saved VPN password (run vpn-keeper setup)", true); return false; }
@@ -181,7 +196,7 @@ namespace VpnKeeper
                 if (heldPassword != null && password != heldPassword)
                 {
                     Log.Info("the saved VPN password changed; logging in again");
-                    heldPassword = null;
+                    ClearHeld();
                     failedLogins = 0;
                 }
                 else if (queued.Length > 0 && queued != password && !changePrompt)
@@ -205,14 +220,37 @@ namespace VpnKeeper
                 Win connect = snap.Main == null ? null : snap.Main.Button("Connect", "Conectar");
                 if (connect == null || !connect.Enabled)
                 {
+                    // Another window (a notice with a new layout, a settings box)
+                    // can modal-disable Connect. Close the safe button on any such
+                    // window and try again in a moment, instead of sitting there.
+                    if (snap.Blockers.Count > 0)
+                    {
+                        bool closed = false;
+                        foreach (Win w in snap.Blockers)
+                        {
+                            Dump(w, "blocking");
+                            Win b = w.Button("Close", "Cerrar", "Cancel", "Cancelar", "OK", "Aceptar");
+                            string what = w.Summary() + (b == null ? " (no button to close it)" : "; closing it");
+                            if (what != lastConnectProblem) Log.Warn("a window is in Connect's way: " + what);
+                            lastConnectProblem = what;
+                            if (b != null) { Tunnel.Click(b); closed = true; }
+                        }
+                        Status.Failed(closed ? "Connect was disabled by another window; it was closed"
+                            : "Connect is disabled by a window with no button to close it (see dumps)");
+                        nextLogin = DateTime.Now.AddSeconds(5);
+                        return false;
+                    }
+
                     // Not a failed login (no backoff), but show it on /health and
-                    // don't repeat the warning every pass.
-                    string why = "no enabled Connect button; buttons seen: " + snap.ButtonList();
-                    Log.Warn(why + " (see vpn-keeper status)");
+                    // don't repeat the warning on every pass.
+                    string why = "no enabled Connect button; buttons seen: " + snap.ButtonList() + "; on screen: " + snap.OnScreen();
+                    if (why != lastConnectProblem) Log.Warn(why + " (see vpn-keeper status)");
+                    lastConnectProblem = why;
                     Status.Failed(why);
                     nextLogin = DateTime.Now.AddSeconds(30);
                     return false;
                 }
+                lastConnectProblem = null;
                 Log.Info("VPN is down; logging in to '" + cfg.Profile + "'");
                 Tunnel.Click(connect);
             }
@@ -243,12 +281,25 @@ namespace VpnKeeper
                     {
                         Win oldBox, newBox, confirmBox;
                         Tunnel.ChangeFields(c, out oldBox, out newBox, out confirmBox);
+                        if (newBox == null)
+                        {
+                            Dump(c, "change-prompt");
+                            Fail("the change-password prompt has no new-password box (see dumps)", false);
+                            return false;
+                        }
                         if (oldBox != null) Tunnel.SetText(oldBox, password);
                         Tunnel.SetText(newBox, queued);
                         if (confirmBox != null) Tunnel.SetText(confirmBox, queued);
                         Log.Info("password change: new password entered");
+                        Win submit = c.Button("OK", "Aceptar", "Change", "Cambiar", "Save", "Guardar", "Submit", "Enviar");
+                        if (submit == null)
+                        {
+                            Dump(c, "change-prompt");
+                            Fail("the change-password prompt has no OK button (see dumps)", false);
+                            return false;
+                        }
                         changeSent = queued;
-                        Tunnel.Click(c.Button("OK", "Aceptar", "Change", "Cambiar", "Save", "Guardar", "Submit", "Enviar"));
+                        Tunnel.Click(submit);
                         answered.Add(c.Handle);
                         nudges = 0;
                         continue;
@@ -292,6 +343,12 @@ namespace VpnKeeper
                         }
                         Win userBox, passBox;
                         Tunnel.PasswordFields(d, out userBox, out passBox);
+                        if (passBox == null)
+                        {
+                            Dump(d, "login-prompt");
+                            Fail("the login prompt has no password box (see dumps)", false);
+                            return false;
+                        }
                         if (!string.IsNullOrEmpty(user) && userBox != null && userBox.Text.Trim() != user) Tunnel.SetText(userBox, user);
                         Tunnel.SetText(passBox, password);
                         Log.Info("password entered");
@@ -321,11 +378,24 @@ namespace VpnKeeper
                         if (step == lastOtpStep || Totp.SecondsLeft(now, OtpPeriod) < 4) continue;
                         Win box = null;
                         foreach (Win e in d.Of("edit")) box = e;
+                        if (box == null)
+                        {
+                            Dump(d, "otp-prompt");
+                            Fail("the one-time-code prompt has no box (see dumps)", false);
+                            return false;
+                        }
                         Tunnel.SetText(box, Totp.Code(key, step, OtpDigits));
                         lastOtpStep = step;
                         Log.Info("one-time code entered");
                     }
-                    Tunnel.Click(d.Button("OK", "Aceptar"));
+                    Win ok = d.Button("OK", "Aceptar");
+                    if (ok == null)
+                    {
+                        Dump(d, "prompt");
+                        Fail("the login prompt has no OK button (see dumps)", false);
+                        return false;
+                    }
+                    Tunnel.Click(ok);
                     answered.Add(d.Handle);
                     nudges = 0;
                     continue;
@@ -386,11 +456,24 @@ namespace VpnKeeper
                 }
                 Win b = box.Button("OK", "Aceptar", "Close", "Cerrar") ?? no;   // a notice, or an unknown question: the safe answer
                 if (b != null) Tunnel.Click(b);
-                if (changeSent == null && Tunnel.PasswordRefused(text))
+                if (Tunnel.PasswordRefused(text))
                 {
-                    // With a new one queued, the next login switches to it; else hold.
-                    if (QueuedPassword().Length > 0) oldRefused = true;
-                    else if (heldPassword == null) Hold("Connect Tunnel says the password is wrong or expired");
+                    string lower = text.ToLowerInvariant();
+                    if (changeSent != null && (lower.Contains("new password") || lower.Contains("nueva contrase")))
+                    {
+                        // The change prompt normally reappears; if a notice is the
+                        // only answer, do not save (promote) the refused new one.
+                        WriteCredential(Credentials.Change, "", "");
+                        changeSent = null;
+                        Log.Error("the VPN refused the new password; it was dropped (queue another on /password)");
+                        Status.Failed("the VPN refused the new password; queue another on /password");
+                    }
+                    else if (changeSent == null)
+                    {
+                        // With a new one queued, the next login switches to it; else hold.
+                        if (QueuedPassword().Length > 0) oldRefused = true;
+                        else if (heldPassword == null) Hold("Connect Tunnel says the password is wrong or expired");
+                    }
                 }
             }
             return snap.MessageBoxes.Count > 0;
@@ -404,6 +487,7 @@ namespace VpnKeeper
         {
             string text = Tunnel.Dump(w);
             if (!dumped.Add(text)) return;
+            if (dumped.Count > 500) dumped.Clear();   // layouts with changing text over months
             try
             {
                 string dir = Path.Combine(Path.GetDirectoryName(Log.FilePath), "dumps");
@@ -424,6 +508,40 @@ namespace VpnKeeper
             return ReadCredential(Credentials.Vpn, out user, out password) ? password : "";
         }
 
+        internal static bool PasswordHeld { get { return heldPassword != null; } }
+
+        // "Never type a refused password twice" must also hold across a restart
+        // (a crash, an update, a logoff), or a reboot loop could lock the account.
+        // The fingerprint is not the secret itself; it is only compared.
+        static string Fingerprint(string password)
+        {
+            using (SHA256 sha = SHA256.Create())
+                return Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(password ?? "")));
+        }
+
+        static void LoadHeld()
+        {
+            if (heldLoaded) return;
+            string saved = SavedPassword();
+            if (saved.Length == 0) return;   // not readable yet: try again at the next login
+            heldLoaded = true;
+            string user, fingerprint;
+            if (ReadCredential(Credentials.Held, out user, out fingerprint) && fingerprint == Fingerprint(saved))
+            {
+                heldPassword = saved;
+                Log.Warn("the saved VPN password was refused before the last restart; holding it (queue a new one on /password)");
+            }
+        }
+
+        static void ClearHeld()
+        {
+            heldPassword = null;
+            // Best effort: the in-memory hold is already gone, and a stale
+            // fingerprint is harmless once the saved password changes.
+            try { WriteCredential(Credentials.Held, "", ""); }
+            catch (Exception e) { Log.Warn("could not clear the saved password-refusal record: " + e.Message); }
+        }
+
         // The new password queued on /password to change to, or "".
         internal static string QueuedPassword()
         {
@@ -440,7 +558,7 @@ namespace VpnKeeper
             WriteCredential(Credentials.Vpn, user ?? "", password);
             WriteCredential(Credentials.Change, "", "");
             changeSent = null;
-            heldPassword = null;
+            ClearHeld();
             oldRefused = false;
             Log.Info(why);
             Status.Notice(why);
@@ -450,6 +568,9 @@ namespace VpnKeeper
         static void Hold(string why)
         {
             heldPassword = SavedPassword();
+            if (heldPassword.Length > 0)
+                try { WriteCredential(Credentials.Held, "", Fingerprint(heldPassword)); }
+                catch (Exception e) { Log.Warn("could not remember the refused password across restarts: " + e.Message); }
             string msg = why + "; queue the new one on /password (or: vpn-keeper password)";
             Log.Error(msg + " (no more logins until then)");
             Status.Failed(msg);
@@ -470,6 +591,7 @@ namespace VpnKeeper
                 if (DateTime.Now < pageLockedUntil) return "Too many wrong codes. Try again after " + pageLockedUntil.ToString("HH:mm") + ".";
                 // Form mistakes first, so a typo does not use up the code.
                 if (password.Length == 0) return "The password is empty; nothing saved.";
+                if (password.Length > 256) return "The password is longer than 256 characters; nothing saved.";
                 if (password != confirm) return "The two passwords differ; nothing saved.";
 
                 string user, seed;
@@ -500,6 +622,8 @@ namespace VpnKeeper
         // so force travels as the queue entry's user name.
         public static string Store(string password, bool force, string source)
         {
+            if (string.IsNullOrEmpty(password)) return "The password is empty; nothing saved.";
+            if (password.Length > 256) return "The password is longer than 256 characters; nothing saved.";
             WriteCredential(Credentials.Change, force ? "force" : "", password);
             Log.Info("new VPN password queued from " + source + (force ? "; reconnecting now" : ""));
             if (force) return "Queued. vpn-keeper reconnects now; if the VPN asks for a change, it changes the password to this one. /health shows how it went.";
@@ -508,8 +632,8 @@ namespace VpnKeeper
 
         // A refused password stops logins altogether (Hold). Other failures are
         // mostly the network or the server, but may still have typed the password,
-        // so they wait 2 min, then 5, then 15: at most 4 tries an hour, within
-        // usual lockout policies, and back within 15 minutes of an outage ending.
+        // so they wait 2 min, then 5, then 15: a burst cannot hammer the server,
+        // and the agent is back within 15 minutes of an outage ending.
         static void Fail(string why, bool setupProblem)
         {
             failedLogins++;
@@ -529,6 +653,9 @@ namespace VpnKeeper
                 req.ReadWriteTimeout = 10000;
                 req.AllowAutoRedirect = false;
                 req.Proxy = null;
+                // This only asks "does something answer through the tunnel?", so
+                // an internal site's self-signed certificate must not look dead.
+                req.ServerCertificateValidationCallback = delegate { return true; };
                 using (req.GetResponse()) { }
                 return true;
             }
@@ -539,6 +666,7 @@ namespace VpnKeeper
                 return true;
             }
             catch (UriFormatException) { return false; }
+            catch (NotSupportedException) { return false; }
         }
     }
 
@@ -579,6 +707,7 @@ namespace VpnKeeper
                     + "last notice: " + (lastNotice.Length == 0 ? "-" : lastNotice) + "\n"
                     + "VPN asking for a new password: " + (asking.Length == 0 ? "no" : asking + " (first seen " + Time(askingSince) + ")") + "\n"
                     + "new password queued: " + (Watchdog.QueuedPassword().Length > 0 ? "yes" : "no") + "\n"
+                    + "password held after a refusal: " + (Watchdog.PasswordHeld ? "yes" : "no") + "\n"
                     + "version: " + BuildInfo.Version + "\n";
             }
         }

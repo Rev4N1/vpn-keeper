@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -58,6 +59,7 @@ namespace VpnKeeper
         public List<Win> Windows = new List<Win>();
         public Win Main, StatusLabel, PasswordDialog, OtpDialog, ChangeDialog;
         public List<Win> MessageBoxes = new List<Win>();
+        public List<Win> Blockers = new List<Win>();   // visible, not one of the windows above
 
         public VpnState State
         {
@@ -104,6 +106,8 @@ namespace VpnKeeper
     {
         public static string Exe = @"C:\Program Files\SonicWall\Modern Connect Tunnel\SnwlConnect.exe";   // tests use the fake
         const string ProcessName = "SnwlConnect";
+        static string foundExe;
+        static DateTime nextLookup = DateTime.MinValue, lastStartError = DateTime.MinValue;
 
         // Status captions, English and Spanish. Order matters: "disconnected"
         // contains "connected", "desconectado" contains "conectado".
@@ -115,6 +119,15 @@ namespace VpnKeeper
                 || s.Contains("desconectando") || s.Contains("reconnect") || s.Contains("reconect")) return VpnState.Busy;
             if (s.StartsWith("connected") || s.StartsWith("conectado")) return VpnState.Up;
             return VpnState.NoWindow;
+        }
+
+        // A one-time-code prompt (its title usually says "One Time Password").
+        public static bool AsksOtp(Win w)
+        {
+            string s = w.Summary().ToLowerInvariant();
+            foreach (string k in new[] { "one time", "onetime", "otp", "6 digit code", "six digit code", "verification code", "authenticator", "backup code", "code", "token", "código", "codigo" })
+                if (s.Contains(k)) return true;
+            return false;
         }
 
         // A prompt for a new password (the old one expired), English or Spanish.
@@ -230,8 +243,12 @@ namespace VpnKeeper
             int session = Process.GetCurrentProcess().SessionId;
             foreach (Process p in Process.GetProcessesByName(ProcessName))
             {
-                if (p.SessionId == session) pids.Add((uint)p.Id);   // only this desktop's windows can be driven
-                p.Dispose();
+                try
+                {
+                    if (p.SessionId == session) pids.Add((uint)p.Id);   // only this desktop's windows can be driven
+                }
+                catch (InvalidOperationException) { }   // it exited while we looked
+                finally { p.Dispose(); }
             }
             snap.Running = pids.Count > 0;
             if (!snap.Running) return snap;
@@ -254,17 +271,31 @@ namespace VpnKeeper
                 foreach (Win s in w.Of("static")) if (Classify(s.Text) != VpnState.NoWindow) { status = s; break; }
                 int edits = 0;
                 foreach (Win e in w.Of("edit")) edits++;
+                bool combo = false;
+                foreach (Win cb in w.Of("combobox")) { combo = true; break; }
                 bool ok = w.Button("OK", "Aceptar") != null;
 
-                if (status != null && snap.Main == null) { snap.Main = w; snap.StatusLabel = status; }
+                // The main window is the one with the configuration combo and a
+                // status label. Without the combo, a message box whose text starts
+                // with "Disconnected" would look like the main window and never be
+                // dismissed.
+                if (status != null && snap.Main == null && combo) { snap.Main = w; snap.StatusLabel = status; }
                 else if (!w.Visible) continue;   // prompts only count while on screen
                 // A notice or question: no boxes, and OK, or Yes and No (a Windows message
                 // box, or Connect Tunnel's own, e.g. "session has been idle ... disconnected").
                 else if (edits == 0 && (w.Class == "#32770" || w.Button("OK", "Aceptar", "Close", "Cerrar") != null
                     || (w.Button(YesCaptions) != null && w.Button(NoCaptions) != null))) snap.MessageBoxes.Add(w);
                 else if (w.Button(SubmitCaptions) != null && (edits >= 3 || (edits != 2 && AsksNewPassword(w)))) snap.ChangeDialog = w;   // old, new, confirm; 2 boxes is the login prompt
-                else if (ok && edits == 1) snap.OtpDialog = w;
+                else if (ok && edits == 1)
+                {
+                    // One box can be the code prompt or a password-only login
+                    // prompt. The title/labels decide; guessing either way is bad.
+                    if (AsksOtp(w)) snap.OtpDialog = w;
+                    else if (AsksNewPassword(w) || w.Summary().ToLowerInvariant().Contains("password") || w.Summary().ToLowerInvariant().Contains("contrase")) snap.PasswordDialog = w;
+                    else snap.Blockers.Add(w);
+                }
                 else if (ok && edits >= 2) snap.PasswordDialog = w;
+                else snap.Blockers.Add(w);
             }
             return snap;
         }
@@ -313,11 +344,85 @@ namespace VpnKeeper
             userBox = edits.Count > 1 && edits[0] != passBox ? edits[0] : null;
         }
 
+        // Where Connect Tunnel actually lives. The default path covers the
+        // usual install; a 32-bit install or a new version may be elsewhere, so
+        // look under both Program Files trees. The walk is bounded and skips
+        // folders it may not read (WindowsApps is one), and the result is cached.
+        public static string FindExe()
+        {
+            if (File.Exists(Exe)) return Exe;
+            if (foundExe != null && File.Exists(foundExe)) return foundExe;
+            if (DateTime.Now < nextLookup) return Exe;
+            nextLookup = DateTime.Now.AddMinutes(10);
+            foreach (Environment.SpecialFolder root in new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+            {
+                string dir = Environment.GetFolderPath(root);
+                if (dir.Length == 0 || !Directory.Exists(dir)) continue;
+                string hit = FindUnder(dir);
+                if (hit != null)
+                {
+                    foundExe = hit;
+                    Log.Info("found Connect Tunnel at " + hit);
+                    return hit;
+                }
+            }
+            return Exe;
+        }
+
+        // A breadth-first search, a few levels deep. Connect Tunnel sits in its
+        // maker's folder (SonicWall\...\SnwlConnect.exe); the whole of Program
+        // Files is not crawled, and a folder that cannot be read is skipped
+        // without abandoning the rest.
+        static string FindUnder(string root)
+        {
+            Queue<string> dirs = new Queue<string>();
+            dirs.Enqueue(root);
+            int seen = 0;
+            while (dirs.Count > 0 && seen++ < 2000)
+            {
+                string d = dirs.Dequeue();
+                try
+                {
+                    foreach (string f in Directory.GetFiles(d, ProcessName + ".exe")) return f;
+                    foreach (string sub in Directory.GetDirectories(d))
+                    {
+                        string name = Path.GetFileName(sub).ToLowerInvariant();
+                        int depth = sub.Substring(root.Length).Split(new[] { Path.DirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries).Length;
+                        // The top two levels are cheap to check; deeper ones only
+                        // if their name looks like the VPN client's.
+                        if (depth < 4 && (depth <= 2 || name.Contains("sonic") || name.Contains("connect") || name.Contains("vpn")))
+                            dirs.Enqueue(sub);
+                    }
+                }
+                catch (Exception) { }   // a protected folder; keep looking
+            }
+            return null;
+        }
+
         public static void Start()
         {
-            Log.Info("starting Connect Tunnel");
-            try { Process.Start(new ProcessStartInfo(Exe) { UseShellExecute = true }); }
-            catch (Exception e) { Log.Error("could not start " + Exe + ": " + e.Message); }
+            string exe = FindExe();
+            if (!File.Exists(exe))
+            {
+                // Not installed (or moved). Say it once every ten minutes, not
+                // every fifteen seconds, so the log stays readable.
+                if (DateTime.Now >= lastStartError.AddMinutes(10))
+                {
+                    Log.Error("Connect Tunnel is not installed (looked for " + Exe + " and under Program Files)");
+                    lastStartError = DateTime.Now;
+                }
+                return;
+            }
+            Log.Info("starting Connect Tunnel from " + exe);
+            try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true }); }
+            catch (Exception e)
+            {
+                if (DateTime.Now >= lastStartError.AddMinutes(10))
+                {
+                    Log.Error("could not start " + exe + ": " + e.Message);
+                    lastStartError = DateTime.Now;
+                }
+            }
         }
 
         // Password boxes accept WM_SETTEXT from another process; they only refuse to be read.

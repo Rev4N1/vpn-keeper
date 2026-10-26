@@ -48,6 +48,7 @@ namespace VpnKeeper
             Eq(Ascii(k), Ascii(Totp.Base32Decode("gezd gnbv gy3t qojq gezd gnbv gy3t qojq")), "base32 spaced lower");
             Yes(Throws(delegate { Totp.Base32Decode("not base32!"); }), "bad base32 rejected");
             Yes(Throws(delegate { Totp.Base32Decode("  "); }), "empty seed rejected");
+            Yes(Throws(delegate { Totp.Base32Decode("A"); }), "a seed that decodes to no bytes rejected");
             Eq(5, Totp.SecondsLeft(new DateTime(2026, 1, 1, 0, 0, 25, DateTimeKind.Utc), 30), "seconds left");
         }
 
@@ -75,6 +76,10 @@ namespace VpnKeeper
             Win otp = new Win { Text = "One Time Password Required" };
             otp.Kids.Add(new Win { Kind = "static", Text = "Enter 6 digit code" });
             No(Tunnel.AsksNewPassword(otp), "OTP prompt is not a password change");
+            Yes(Tunnel.AsksOtp(otp), "OTP prompt recognised by its title");
+            Win passOnly = new Win { Text = "Please log in:" };
+            passOnly.Kids.Add(new Win { Kind = "static", Text = "Password" });
+            No(Tunnel.AsksOtp(passOnly), "a password-only prompt is not an OTP prompt");
         }
 
         static void RulesTests()
@@ -155,6 +160,20 @@ namespace VpnKeeper
             Yes(night.Active(On(0, 2, 0)), "overnight after midnight");
             No(night.Active(On(0, 12, 0)), "overnight midday off");
 
+            // An overnight window belongs to the day it starts on: Monday
+            // 22:00-06:00 also covers Tuesday until 06:00 (not Monday 00:00-06:00).
+            Schedule mondayNight = Schedule.Parse("Mon 22:00-06:00");
+            Yes(mondayNight.Active(On(0, 23, 0)), "Mon night starts Monday");
+            Yes(mondayNight.Active(On(1, 2, 0)), "Mon night runs into Tuesday");
+            No(mondayNight.Active(On(1, 6, 0)), "Mon night ends Tuesday 06:00");
+            No(mondayNight.Active(On(1, 12, 0)), "Tue midday off");
+            No(mondayNight.Active(On(0, 2, 0)), "Mon 02:00 belongs to Sunday night, not Monday");
+            No(mondayNight.Active(On(0, 12, 0)), "Mon midday off");
+            Schedule weekNights = Schedule.Parse("Mon-Thu 22:00-06:00");
+            Yes(weekNights.Active(On(1, 2, 0)), "Tuesday 02:00 is Monday night");
+            Yes(weekNights.Active(On(4, 2, 0)), "Friday 02:00 is Thursday night");
+            No(weekNights.Active(On(5, 2, 0)), "Saturday 02:00 is Friday night (off)");
+
             // The user's schedule: Mon-Thu 07:45-17:00, Fri 07:45-15:00, weekend off.
             Schedule s = Schedule.Parse("Mon-Thu 07:45-17:00, Fri 07:45-15:00");
             No(s.Active(On(0, 7, 44)), "Mon before start");
@@ -186,7 +205,11 @@ namespace VpnKeeper
                 Eq(9090, c.Port, "port");
                 Yes(Throws(delegate { File.WriteAllText(f, "port = 0\n"); Config.Load(f); }), "bad port rejected");
                 Yes(Throws(delegate { File.WriteAllText(f, "colour = blue\n"); Config.Load(f); }), "unknown key rejected");
-                Eq(0, Config.Load(f + ".missing").Problems().Count == 3 ? 0 : 1, "missing file = empty config");
+                Eq(4, Config.Load(f + ".missing").Problems().Count, "missing file = empty config with four problems");
+                Config badClient = new Config();
+                badClient.Clients = Config.Split("*.corp.example");
+                Eq(1, badClient.Problems().FindAll(delegate(string p) { return p.Contains("not an IPv4 network"); }).Count,
+                    "a client that is not a CIDR is reported");
 
                 Config saved = new Config();
                 saved.Profile = "VPN X";
@@ -198,6 +221,7 @@ namespace VpnKeeper
                 Eq("VPN X", back.Profile, "round-trip profile");
                 Eq(2, back.Clients.Count, "round-trip clients");
                 Eq(0, back.Problems().Count, "a full config has no problems");
+                Yes(!File.Exists(f + ".tmp") && !File.Exists(f + ".bak"), "atomic save leaves no temporary file");
             }
             finally { File.Delete(f); }
         }
@@ -298,17 +322,18 @@ namespace VpnKeeper
             foreach (Process old in Process.GetProcessesByName("SnwlConnect")) { Fail("a SnwlConnect is already running (pid " + old.Id + ")"); return; }
             Tunnel.Exe = fakeExe;
             const string NewPassword = "n3w pass!";
-            string saved = "old password", queued = "", queuedUser = "";   // what Credential Manager holds; starts out wrong
+            string saved = "old password", queued = "", queuedUser = "", held = "";   // what Credential Manager holds; starts out wrong
             Watchdog.ReadCredential = delegate(string target, out string user, out string secret)
             {
                 user = target == Credentials.Otp ? "otp" : target == Credentials.Change ? queuedUser : "test.user";
-                secret = target == Credentials.Otp ? Seed : target == Credentials.Change ? queued : saved;
+                secret = target == Credentials.Otp ? Seed : target == Credentials.Change ? queued : target == Credentials.Held ? held : saved;
                 return true;
             };
             Watchdog.WriteCredential = delegate(string target, string user, string secret)
             {
                 if (target == Credentials.Vpn) saved = secret;
                 else if (target == Credentials.Change) { queuedUser = user; queued = secret; }
+                else if (target == Credentials.Held) held = secret;
             };
             Config cfg = new Config();
             cfg.Profile = "VPN Example";
@@ -325,6 +350,7 @@ namespace VpnKeeper
                 DateTime until = DateTime.Now.AddSeconds(30);
                 while (DateTime.Now < until && !Watchdog.Status.Report().Contains("vpn-keeper password")) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 Yes(Watchdog.Status.Report().Contains("refused the saved password"), "refused password reported on /health");
+                Yes(held.Length > 0, "the refused password is remembered across a restart");
                 for (int i = 0; i < 3; i++) Watchdog.Tick(cfg);
                 Yes(Tunnel.Take().PasswordDialog != null, "refused password not typed again");
 
@@ -338,6 +364,7 @@ namespace VpnKeeper
                 Yes(snap.Main != null && !snap.Main.Visible, "the fake hid its window like the real client");
                 Eq(Password, saved, "switched to the queued password after the old one was refused");
                 Eq("", queued, "queue cleared after switching");
+                Eq("", held, "the refused-password hold is cleared after switching");
 
                 // Queue a new one with Force while connected: the agent reconnects at
                 // once, the VPN offers a change, and the agent changes it.

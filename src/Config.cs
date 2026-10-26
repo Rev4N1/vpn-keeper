@@ -75,17 +75,53 @@ namespace VpnKeeper
             sb.AppendLine("clients   = " + string.Join(" ", Clients.ToArray()));
             sb.AppendLine("port      = " + Port);
             sb.AppendLine("hours     = " + Hours + "   # when the VPN may be on, e.g. Mon-Thu 07:45-17:00, Fri 07:45-15:00; empty = always");
+
+            // Write beside it, then swap it in: a crash or full disk midway must
+            // not leave the agent with a half-written config it cannot parse.
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllText(path, sb.ToString());
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, sb.ToString());
+            try
+            {
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+            }
+            catch (IOException)
+            {
+                // Some file systems do not support Replace (or something holds
+                // the old file open). Move it aside first, so a failed second
+                // move can put the old config back.
+                string backup = path + ".bak";
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        try { File.Delete(backup); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        File.Move(path, backup);
+                    }
+                    File.Move(tmp, path);
+                    try { if (File.Exists(backup)) File.Delete(backup); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
+                catch
+                {
+                    if (!File.Exists(path) && File.Exists(backup))
+                        try { File.Move(backup, path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                    throw;
+                }
+            }
         }
 
-        // What is missing for the agent to do its job; empty when complete.
+        // What is missing (or useless) for the agent to do its job; empty when
+        // complete. The agent logs these every start, so keep them actionable.
         public List<string> Problems()
         {
             List<string> p = new List<string>();
             if (Profile.Length == 0) p.Add("no Connect Tunnel configuration (profile) set");
             if (CheckUrl.Length == 0) p.Add("no check URL set");
             if (Allow.Count == 0) p.Add("no sites to share (allow) set");
+            if (Clients.Count == 0) p.Add("no clients set (nobody may use the proxy)");
+            foreach (string c in Clients)
+                if (!Rules.IsCidr(c)) p.Add("client '" + c + "' is not an IPv4 network (like 192.168.1.0/24)");
             return p;
         }
 

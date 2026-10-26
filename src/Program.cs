@@ -63,36 +63,84 @@ namespace VpnKeeper
         static int Supervise()
         {
             FreeConsole();   // started from the Startup shortcut: no window
-            bool created;
-            string exe = Process.GetCurrentProcess().MainModule.FileName, stamp = Agent.ExeStamp(exe);
-            using (Mutex m = new Mutex(true, SupervisorMutex, out created))
+            while (true)
             {
-                if (!created) return 0;   // already running in this session
-                Log.Info("supervisor started");
-                Agent.BlockSleep();
-                while (true)
+                string exe = Process.GetCurrentProcess().MainModule.FileName, stamp = Agent.ExeStamp(exe);
+                bool created;
+                using (Mutex m = new Mutex(true, SupervisorMutex, out created))
                 {
-                    // Nothing in here may throw out of the loop, or the agent
-                    // would stop being restarted until the next logon.
-                    try
+                    if (!created) return 0;   // already running in this session
+                    Log.Info("supervisor started");
+                    Agent.BlockSleep();
+                    int delay = 5;   // a quick exit waits 10 s, then doubles to 5 min
+                    while (true)
                     {
-                        using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
+                        // Nothing in here may throw out of the loop, or the agent
+                        // would stop being restarted until the next logon.
+                        int started = Environment.TickCount;
+                        try
                         {
-                            p.WaitForExit();
-                            if (Agent.ExeStamp(exe) != stamp) break;   // updated: hand over to the new .exe
-                            Log.Warn("agent exited (code " + p.ExitCode + "); starting it again in 10 s");
+                            using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
+                            {
+                                p.WaitForExit();
+                                if (Agent.ExeStamp(exe) != stamp) break;   // updated: hand over to the new .exe
+                                int ran = (Environment.TickCount - started) / 1000;
+                                delay = ran < 60 ? Math.Min(delay * 2, 300) : 10;
+                                Log.Warn("agent exited (code " + p.ExitCode + ") after " + ran + " s; starting it again in " + delay + " s");
+                            }
                         }
+                        catch (Exception e)
+                        {
+                            Log.Error("supervisor could not start the agent: " + e.Message);
+                            delay = Math.Min(delay * 2, 300);
+                        }
+                        Thread.Sleep(delay * 1000);
                     }
-                    catch (Exception e) { Log.Error("supervisor could not start the agent: " + e.Message); }
-                    Thread.Sleep(10000);
+                    m.ReleaseMutex();
                 }
-                m.ReleaseMutex();
+                // The mutex is gone now, so the new supervisor can take over.
+                Log.Info("supervisor restarting on the new vpn-keeper.exe");
+                if (HandOver(exe))
+                {
+                    Thread.Sleep(15000);   // keep blocking sleep until the new one blocks it too
+                    return 0;
+                }
+                // The new .exe would not start. Keep this supervisor alive (it can
+                // still run the new agent) rather than leave the PC unwatched.
+                Log.Warn("the new supervisor did not start; this one keeps supervising");
+                Thread.Sleep(5000);
             }
-            // The mutex is gone now, so the new supervisor can take over.
-            Log.Info("supervisor restarting on the new vpn-keeper.exe");
-            Process.Start(new ProcessStartInfo(exe, "start") { UseShellExecute = false, CreateNoWindow = true });
-            Thread.Sleep(15000);   // keep blocking sleep until the new one blocks it too
-            return 0;
+        }
+
+        // Starts the new supervisor and waits until it really owns the mutex.
+        // An earlier build's update could launch a half-copied .exe and then
+        // quietly leave nothing running until the next logon.
+        static bool HandOver(string exe)
+        {
+            for (int attempt = 1; attempt <= 12; attempt++)
+            {
+                try { Process.Start(new ProcessStartInfo(exe, "start") { UseShellExecute = false, CreateNoWindow = true }); }
+                catch (Exception e) { Log.Error("could not start the new supervisor: " + e.Message); }
+                if (SupervisorRunning(5000)) return true;
+                Log.Warn("the new supervisor did not appear; trying again");
+            }
+            Log.Error("could not hand over to the new vpn-keeper.exe");
+            return false;
+        }
+
+        static bool SupervisorRunning(int milliseconds)
+        {
+            for (int i = 0; i < milliseconds / 250; i++)
+            {
+                try
+                {
+                    Mutex m;
+                    if (Mutex.TryOpenExisting(SupervisorMutex, out m)) { m.Dispose(); return true; }
+                }
+                catch (Exception) { }   // e.g. it is exiting; keep polling
+                Thread.Sleep(250);
+            }
+            return false;
         }
 
         static string[] Skip(string[] args)
@@ -114,7 +162,7 @@ namespace VpnKeeper
                     Console.WriteLine("vpn-keeper is already running in the background. Stop it first: vpn-keeper uninstall");
                     return 3;
                 }
-                Agent.Run(Config.Load());
+                Agent.Run();
                 return 0;
             }
         }

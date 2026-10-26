@@ -14,14 +14,20 @@ logon ─▶ vpn-keeper start   (supervisor: restarts the agent if it ever exits
 
 `setup` puts a shortcut to `vpn-keeper start` in the Startup folder. The
 supervisor and the agent each hold a named mutex, so there is never more than
-one of each per session, and an agent crash costs about ten seconds.
+one of each per session, and an agent crash costs about ten seconds. If the
+agent keeps dying quickly, restarts back off from 10 seconds to 5 minutes. A
+malformed config does not kill the agent: it logs the error and retries the
+file every 60 seconds, with sleep still blocked.
 
 ## Driving Connect Tunnel
 
 Modern Connect Tunnel has no command line for logging in, so the agent reads
 and operates its windows with plain Win32 messages: no mouse, no keyboard
 focus, so a locked screen is fine. WinForms control ids change on every start,
-so controls are found by class and caption instead. The windows:
+so controls are found by class and caption instead. Its `.exe` is looked up in
+the usual place first, then in a bounded walk of both Program Files trees (so a
+32-bit or differently named install still works), with the result cached. The
+windows:
 
 | Window | What the agent uses |
 |---|---|
@@ -47,7 +53,10 @@ Details that matter in practice:
 - **Refused or expired password.** A second password prompt in one login, a
   notice saying the password is wrong or expired, or a required change with
   nothing queued makes the agent hold: no more logins until the saved
-  password changes or a new one is queued.
+  password changes or a new one is queued. The refusal is written to
+  `vpn-keeper:held` as a SHA-256 fingerprint (never the password), so a
+  restart, crash or update cannot retry it and risk a lockout. It is cleared
+  when the password is promoted or the saved one changes.
 - **New password.** `/password` (a current one-time code, each code once, 5
   wrong codes lock it for 15 min) queues one in Credential Manager entry
   `vpn-keeper:change` (empty = none). It is used: in a change prompt (3+
@@ -62,21 +71,26 @@ Details that matter in practice:
   whose caption has change/cambiar and password/contraseña). Its state is read
   with `BM_GETCHECK`, except on owner-drawn boxes, which start clear. Other
   logins leave it clear.
-- **Dumps.** The login prompt is dumped too, once per agent run.
-- **Dumps.** Each distinct notice, change prompt, or window blocking Connect
-  is written to `dumps\` beside the log: captions, classes and states, never
-  box contents.
+- **Dumps.** The login prompt is dumped too, once per agent run. Each distinct
+  notice, change prompt, or window blocking Connect is written to `dumps\`
+  beside the log: captions, classes and states, never box contents. The newest
+  50 are kept (and anything older than 30 days is removed at start), so a PC
+  left running for months does not collect thousands.
 - **Clicking a hidden window.** In the tray, Connect Tunnel's window is
   hidden and its buttons ignore `BM_CLICK`, so the click goes to the parent as
   `WM_COMMAND`/`BN_CLICKED`, which WinForms turns into `Click`.
 - **Updating.** A running `.exe` can be renamed but not overwritten:
-  `update` moves it to `.old` and copies the new one in. The agent sees its
-  file change and exits; the supervisor sees it too and starts a new
-  supervisor from the new file, in the same desktop session. Sleep stays
-  blocked throughout: the supervisor blocks it as well as the agent, the old
-  supervisor lingers 15 s after starting the new one, and `update` itself
-  blocks it for 90 s (for older supervisors, which left a gap; a long-idle PC
-  sleeps the moment nothing blocks it).
+  `update` copies the new one beside it, stamps it with the current time, then
+  moves it into place. The agent sees its file change and exits; the supervisor
+  sees it too and starts a new supervisor from the new file, in the same
+  session. The old supervisor exits only after the new one owns the mutex; if
+  the new `.exe` will not start, it keeps supervising with the new agent
+  instead, so an update cannot leave the PC unwatched.
+  Sleep stays blocked throughout: the supervisor blocks it as well as the
+  agent, the old supervisor lingers 15 s after starting the new one, and
+  `update` itself blocks it for 90 s (for older supervisors, which left a gap;
+  a long-idle PC sleeps the moment nothing blocks it). Config writes are
+  atomic too: a crash midway leaves the previous config intact.
 - **Language.** English and Spanish captions are both recognised.
 
 `vpn-keeper status` prints what the agent currently sees, for when a Connect
@@ -93,15 +107,20 @@ Every 30 s while connected, every few seconds otherwise:
   tunnel: disconnect, so the next pass logs in fresh. (The requests do not
   hold off the server's idle timeout; the next pass simply logs in again.)
 - **Connecting/Reconnecting** with no prompt for 3 minutes → Cancel;
-- **not running** → start Connect Tunnel.
+- **not running** → start Connect Tunnel; **running with no readable window**
+  for 2 minutes → start it again, which brings the single instance's window
+  back.
 
 Safeguards:
 
-- **Lockout-safe.** A refused password is never typed again (see above).
-  Other failed logins back off 2, then 5, then 15 minutes.
+- **Lockout-safe.** A refused password is never typed again, even after a
+  restart (see above). Other failed logins wait 2, then 5, then 15 minutes
+  between tries, so a burst cannot hammer the server and an outage costs at
+  most 15 minutes.
 - **Never stuck.** A watchdog pass takes 2 minutes at most; if none completes
-  in 10, the agent exits and the supervisor starts a fresh one. Proxy sockets
-  use TCP keep-alive, so connections whose peer vanished are dropped.
+  in 10, the agent exits and the supervisor starts a fresh one. A hung Connect
+  is cancelled after 3 minutes. Proxy sockets use TCP keep-alive, so
+  connections whose peer vanished are dropped.
 - **Codes used once.** A one-time code is never reused, and one about to expire
   is held until the next 30-second window.
 - **Secrets** are read from Credential Manager (DPAPI, this user only) at each
@@ -111,8 +130,10 @@ Safeguards:
 
 While vpn-keeper runs, the agent and the supervisor both hold
 `ES_SYSTEM_REQUIRED`, like a video player: idle sleep is blocked, nothing is
-reconfigured, and it is released when they stop. The screen can still turn off and lock. The lid is a separate Windows
-setting.
+reconfigured, and it is released when they stop. The screen can still turn off
+and lock. The lid is a separate Windows setting, as is signing in after a
+reboot: vpn-keeper starts at logon, so automatic sign-in (or leaving the PC
+signed in) is required for it to come back by itself.
 
 ## The proxy
 
@@ -122,7 +143,9 @@ follows the VPN's split-tunnel routes. Two lists keep it from being an open
 door: `clients` (who may connect) and `allow` (where it may go); anything else
 gets 403. `/proxy.pac` is generated from `allow` and points at the address the
 request arrived on, so browsers send exactly the shared sites to the proxy and
-everything else direct. The listener restarts itself if it ever fails.
+everything else direct. The listener restarts itself if it ever fails, and at
+most 128 connections are served at once (extra ones get a 503), so a stuck or
+hostile client cannot exhaust the process.
 
 ## The firewall rule
 
@@ -144,7 +167,9 @@ router's return path usually makes this unnecessary.)
 `build.ps1 -Test` builds a separate `tests.exe` (no test code ships in
 `vpn-keeper.exe`) and runs it. It covers TOTP against the RFC 6238 vectors,
 Base32, the status captions, the allow lists and PAC, request parsing, the
-config round-trip, and the proxy over real sockets. Given a fake
-`SnwlConnect.exe` — a WinForms program with the same windows, `&` markers and
-tray-hiding, that actually checks the password and code — it also runs a full
-login and a forced re-login end to end. CI runs all of it on every push.
+schedule (including overnight windows), config round-trip/validation and its
+atomic save, the admin firewall plan, and the proxy over real sockets. Given a
+fake `SnwlConnect.exe` — a WinForms program with the same windows, `&` markers
+and tray-hiding, that actually checks the password and code — it also runs a
+full login, a refused-password hold, a switch to a queued password, and a
+forced re-login end to end. CI runs all of it on every push.

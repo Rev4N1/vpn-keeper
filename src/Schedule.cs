@@ -13,6 +13,9 @@ namespace VpnKeeper
     // Days are Mon Tue Wed Thu Fri Sat Sun (ranges like Mon-Thu, or lists like
     // Mon,Wed,Fri). A rule with no days applies to every day. The VPN is on
     // when any rule's days and time window include now; otherwise off.
+    //
+    // An overnight window (end before start) belongs to the day it starts on:
+    // "Mon 22:00-06:00" covers Monday evening and Tuesday until 06:00.
     class Schedule
     {
         struct Rule { public int Days; public int Start, End; }   // Days: bit per DayOfWeek (Sun=0..Sat=6)
@@ -51,10 +54,23 @@ namespace VpnKeeper
         {
             if (Always) return true;
             int bit = 1 << (int)now.DayOfWeek;
+            int prev = 1 << (int)(((int)now.DayOfWeek + 6) % 7);   // yesterday
             int m = now.Hour * 60 + now.Minute;
             foreach (Rule r in rules)
-                if ((r.Days & bit) != 0 && (r.Start <= r.End ? (m >= r.Start && m < r.End) : (m >= r.Start || m < r.End)))
-                    return true;
+            {
+                if (r.Start <= r.End)
+                {
+                    // An ordinary window belongs to the day it starts on.
+                    if ((r.Days & bit) != 0 && m >= r.Start && m < r.End) return true;
+                }
+                else
+                {
+                    // Overnight: "Mon 22:00-06:00" covers Monday evening and the
+                    // early hours of Tuesday, so after midnight look at yesterday.
+                    if ((r.Days & bit) != 0 && m >= r.Start) return true;
+                    if ((r.Days & prev) != 0 && m < r.End) return true;
+                }
+            }
             return false;
         }
 

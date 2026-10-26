@@ -60,10 +60,16 @@ namespace VpnKeeper
             }
             if (AllowsName(host)) return true;
             if (nets.Count == 0) return false;
-            try { addresses = Dns.GetHostAddresses(host); }
+            IPAddress[] resolved;
+            try { resolved = Dns.GetHostAddresses(host); }
             catch (SocketException) { return false; }
-            foreach (IPAddress a in addresses) if (AllowsAddress(a)) return true;
-            return false;
+            // Only hand back the addresses that the allow list covers: a name
+            // that resolves to both an internal and a public address must not
+            // let the proxy fall through to the public one.
+            List<IPAddress> allowed = new List<IPAddress>();
+            foreach (IPAddress a in resolved) if (AllowsAddress(a)) allowed.Add(a);
+            addresses = allowed.ToArray();
+            return addresses.Length > 0;
         }
 
         // A PAC file that sends exactly the allowed destinations to this proxy

@@ -21,7 +21,11 @@ What it does, unattended:
 - **Shares the VPN** through an HTTP proxy, so a browser on another machine
   reaches the internal sites and nothing else.
 - **Restarts itself** if the agent or the proxy ever fails, and starts at every
-  logon.
+  logon. An update is handed over to the new supervisor only after it is
+  actually running.
+- **Fixes itself without attention**: a malformed config is retried every
+  minute instead of crash-looping, a stuck agent is replaced after 10 minutes,
+  and a connect that hangs is cancelled after 3 minutes.
 
 The VPN password and the one-time-code seed are kept in Windows Credential
 Manager. They are never in a file, the log, or this repository.
@@ -47,6 +51,19 @@ Manager. They are never in a file, the log, or this repository.
    proxy port. (It prints the command too, to run by hand if you prefer.)
 
 That's it. Check it any time with `vpn-keeper status`.
+
+### For true unattended operation
+
+vpn-keeper starts at **logon**, so after a reboot the PC must sign in by itself:
+
+- turn on automatic sign-in (or leave the PC signed in), and
+- disable sleep, hibernation and "turn off hard disk"; set the lid-close action
+  to *Do nothing* if it is a laptop. vpn-keeper blocks idle sleep, but it cannot
+  override a lid close or a manual sleep.
+
+Keep the PC on mains power and its network available. A locked screen is fine;
+vpn-keeper drives Connect Tunnel with window messages, not the mouse or
+keyboard.
 
 ## Use it from another machine
 
@@ -78,15 +95,18 @@ The new password **waits**; the current one stays in use until:
 
 Tick **force** to change it now: vpn-keeper reconnects and ticks *Change
 password* in the login prompt, so the VPN asks for the new one right after
-that login. While the VPN is asking, the page says so, and `/health` shows `VPN asking for a new password` and `new password
-queued`. With nothing queued, an offer is declined and the login goes on;
-a required change stops logins until you queue one.
+that login. While the VPN is asking, the page says so, and `/health` shows
+`VPN asking for a new password` and `new password queued`. With nothing queued,
+an offer is declined and the login goes on; a required change stops logins
+until you queue one.
 
 vpn-keeper never types a refused password twice, so it can't lock your
-account. A new password the VPN refuses is dropped, never retyped; queue
-another. Every prompt and notice Connect Tunnel shows is written once to
-`%LOCALAPPDATA%\vpn-keeper\dumps\` (captions and layout, never box contents),
-to check against when the VPN does something new.
+account. That refusal is remembered across a restart (as a fingerprint, not the
+password), so a reboot or update cannot retry it. A new password the VPN refuses
+is dropped, never retyped; queue another. Every prompt and notice Connect Tunnel
+shows is written once to `%LOCALAPPDATA%\vpn-keeper\dumps\` (captions and
+layout, never box contents), to check against when the VPN does something new.
+Only the newest 50 dumps are kept.
 
 To reach it from outside the home network, bring that network within reach
 (e.g. a home VPN) and make sure the PC's firewall rule allows your client's
@@ -118,7 +138,9 @@ hours = Mon-Thu 07:45-17:00, Fri 07:45-15:00    # weekdays, shorter Friday, week
 Each rule is an optional day part (`Mon`, `Mon-Thu`, `Mon,Wed,Fri`) and a
 `HH:MM-HH:MM` window; a rule with no days applies every day. Outside every
 rule the agent keeps the VPN disconnected and never logs in. Empty = always.
-A window whose end is before its start (like `22:00-06:00`) runs overnight.
+A window whose end is before its start (like `22:00-06:00`) runs overnight and
+belongs to the day it starts: `Mon 22:00-06:00` also covers Tuesday until 06:00,
+but not Monday before 22:00.
 
 ## Build
 
