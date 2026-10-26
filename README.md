@@ -60,6 +60,34 @@ Set the browser's **automatic proxy configuration (PAC)** URL to the one
 Only the shared sites go through the proxy; everything else stays direct.
 `http://<pc>:8080/health` shows the VPN state and the last login.
 
+### When the VPN password expires or changes
+
+Give vpn-keeper the new password on `http://<pc>:8080/password`, from any
+machine that may use the proxy (or `vpn-keeper password` on the PC). The page
+asks for the current 6-digit code from your authenticator app, so others who
+can reach the proxy can't use it; five wrong codes lock it for 15 minutes.
+
+The new password **waits**; the current one stays in use until:
+
+- the VPN asks for a password change while logging in (it offers this when
+  the password is about to expire, and requires it once expired): vpn-keeper
+  fills in the old and the new password, and once the VPN is up the new one
+  is the saved one;
+- or the current password is refused (you changed it elsewhere): vpn-keeper
+  switches to the new one.
+
+Tick **Force** to reconnect right away, so the VPN gets its chance to ask
+now instead of at the next login. While the VPN is asking, the page shows a
+banner, and `/health` shows `VPN asking for a new password` and `new password
+queued`. With nothing queued, an offer is declined and the login goes on;
+a required change stops logins until you queue one.
+
+vpn-keeper never types a refused password twice, so it can't lock your
+account. A new password the VPN refuses is dropped, never retyped; queue
+another. Every prompt and notice Connect Tunnel shows is written once to
+`%LOCALAPPDATA%\vpn-keeper\dumps\` (captions and layout, never box contents),
+to check against when the VPN does something new.
+
 To reach it from outside the home network, bring that network within reach
 (e.g. a home VPN) and make sure the PC's firewall rule allows your client's
 addresses.
@@ -69,6 +97,8 @@ addresses.
 | Command | Does |
 |---|---|
 | `vpn-keeper setup` | set up, or change settings (Enter keeps each current value) |
+| `vpn-keeper password` | queue a new VPN password (see above) |
+| `vpn-keeper update` | run from a newly downloaded `.exe`: installs it over the running one, which restarts on it by itself; settings and secrets stay (works over SSH) |
 | `vpn-keeper status` | what's set, what's running, and what to fix |
 | `vpn-keeper uninstall` | stop it, remove autostart, delete the saved secrets |
 | `vpn-keeper run` | run in the window with the log on screen (for testing) |

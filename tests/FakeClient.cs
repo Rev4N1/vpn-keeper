@@ -2,6 +2,8 @@
 // windows copy the real client's (control types, captions, dialog order, the
 // & shortcut markers, hiding to the tray once connected), and it really checks
 // the password and the one-time code, so the login is tested end to end.
+// Every login ends by offering a password change, as when it is about to
+// expire; accepting really changes the password.
 //
 //   SnwlConnect.exe <password> <base32 seed> [<seconds until the session expires>]
 
@@ -25,13 +27,15 @@ namespace VpnKeeper.Fake
 
     class MainForm : Form
     {
-        readonly string password;
+        string password;   // changes when the user accepts a password change
         readonly byte[] key;
         readonly int expireSeconds;
         readonly ComboBox profile = new ComboBox();
         readonly Label status = new Label();
         readonly Button action = new Button();
         readonly Timer expiry = new Timer();
+        int expiries;
+        bool blocked;
 
         public MainForm(string password, byte[] key, int expireSeconds)
         {
@@ -61,6 +65,17 @@ namespace VpnKeeper.Fake
             expiry.Tick += delegate
             {
                 expiry.Stop();
+                if (++expiries % 2 == 0)
+                {
+                    // Every second expiry is the server's idle timeout: Disconnected,
+                    // and a notice; Connect is ignored until someone presses OK.
+                    SetState("Disconnected", "&Connect");
+                    Show();
+                    blocked = true;   // like the real one: Connect stays enabled but does nothing
+                    using (NoticeForm n = new NoticeForm()) n.ShowDialog(this);
+                    blocked = false;
+                    return;
+                }
                 Show();   // the real client pops back up to ask again
                 WindowState = FormWindowState.Normal;
                 SetState("Reconnecting...", "&Cancel");
@@ -77,6 +92,7 @@ namespace VpnKeeper.Fake
 
         void OnAction(object sender, EventArgs e)
         {
+            if (blocked) return;
             if (action.Text == "&Connect")
             {
                 SetState("Connecting...", "&Cancel");
@@ -87,10 +103,28 @@ namespace VpnKeeper.Fake
 
         void Authenticate()
         {
-            using (PasswordForm p = new PasswordForm())
-                if (p.ShowDialog(this) != DialogResult.OK || p.Password != password) { SetState("Disconnected", "&Connect"); return; }
+            // A wrong password gets the prompt again, up to three times.
+            for (int tries = 1; ; tries++)
+                using (PasswordForm p = new PasswordForm())
+                {
+                    if (p.ShowDialog(this) != DialogResult.OK) { SetState("Disconnected", "&Connect"); return; }
+                    if (p.Password == password) break;
+                    if (tries == 3) { SetState("Disconnected", "&Connect"); return; }
+                }
             using (OtpForm o = new OtpForm())
                 if (o.ShowDialog(this) != DialogResult.OK || !CodeOk(o.Code)) { SetState("Disconnected", "&Connect"); return; }
+            if (MessageBox.Show(this, "Your password will expire in 5 days. Do you want to change it now?", "Password expiring", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                using (ChangeForm c = new ChangeForm())
+                {
+                    if (c.ShowDialog(this) != DialogResult.OK) { SetState("Disconnected", "&Connect"); return; }
+                    if (c.Old != password || c.New.Length == 0 || c.New != c.Confirm || c.New == password)
+                    {
+                        MessageBox.Show(this, "The password could not be changed.", "Change password");
+                        SetState("Disconnected", "&Connect");
+                        return;
+                    }
+                    password = c.New;
+                }
             SetState("Connected", "&Disconnect");
             Hide();   // once connected, the real client goes to the tray
             if (expireSeconds > 0) { expiry.Interval = expireSeconds * 1000; expiry.Start(); }
@@ -126,6 +160,48 @@ namespace VpnKeeper.Fake
             Controls.AddRange(new Control[] { title, userLabel, user, passLabel, pass, ok, cancel });
             AcceptButton = ok;
             CancelButton = cancel;
+        }
+    }
+
+    class ChangeForm : Form
+    {
+        readonly TextBox old = new TextBox(), neu = new TextBox(), confirm = new TextBox();
+        public string Old { get { return old.Text; } }
+        public string New { get { return neu.Text; } }
+        public string Confirm { get { return confirm.Text; } }
+
+        public ChangeForm()
+        {
+            Text = "Change Password";
+            ClientSize = new Size(520, 260);
+            StartPosition = FormStartPosition.CenterParent;
+            Controls.Add(new Label { Text = "Old password", Location = new Point(30, 30), AutoSize = true });
+            Controls.Add(old);
+            Controls.Add(new Label { Text = "New password", Location = new Point(30, 80), AutoSize = true });
+            Controls.Add(neu);
+            Controls.Add(new Label { Text = "Confirm new password", Location = new Point(30, 130), AutoSize = true });
+            Controls.Add(confirm);
+            int y = 26;
+            foreach (TextBox t in new[] { old, neu, confirm }) { t.Location = new Point(220, y); t.Width = 260; t.UseSystemPasswordChar = true; y += 50; }
+            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(300, 210) };
+            Button cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(400, 210) };
+            Controls.AddRange(new Control[] { ok, cancel });
+            AcceptButton = ok;
+            CancelButton = cancel;
+        }
+    }
+
+    class NoticeForm : Form
+    {
+        public NoticeForm()
+        {
+            Text = "Connect Tunnel";
+            ClientSize = new Size(520, 140);
+            StartPosition = FormStartPosition.CenterParent;
+            Label info = new Label { Text = "Your session has been idle for 30 minutes and has been disconnected.", Location = new Point(20, 30), AutoSize = true };
+            Button ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(420, 95) };
+            Controls.AddRange(new Control[] { info, ok });
+            AcceptButton = ok;
         }
     }
 

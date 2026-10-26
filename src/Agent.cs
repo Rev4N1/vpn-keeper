@@ -1,11 +1,13 @@
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace VpnKeeper
 {
     // The long-running part: keeps the PC awake, serves the proxy, and runs
-    // the VPN watchdog forever. Nothing in here may end the process.
+    // the VPN watchdog forever. Nothing in here may end the process, except
+    // a new .exe being installed.
     static class Agent
     {
         public const string Mutex = @"Local\vpn-keeper-agent";   // one agent per Windows session
@@ -32,10 +34,21 @@ namespace VpnKeeper
             if (SetThreadExecutionState(EsContinuous | EsSystemRequired) == 0) Log.Warn("could not block idle sleep");
 
             Proxy proxy = new Proxy(cfg.Port, new Rules(cfg.Clients), new Rules(cfg.Allow), Watchdog.Status.Report);
+            proxy.SavePassword = Watchdog.SavePassword;
+            proxy.PasswordAsked = Watchdog.Status.Asking;
             proxy.Start();
 
+            string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName, stamp = ExeStamp(exe);
             while (true)
             {
+                // 'vpn-keeper update' swapped in a new .exe: exit, and the
+                // supervisor starts the new one.
+                if (ExeStamp(exe) != stamp)
+                {
+                    Log.Info("a new vpn-keeper.exe was installed; restarting on it");
+                    proxy.Stop();
+                    return;
+                }
                 int wait;
                 try { wait = Watchdog.Tick(cfg); }
                 catch (Exception e)
@@ -46,6 +59,13 @@ namespace VpnKeeper
                 }
                 Thread.Sleep(wait * 1000);
             }
+        }
+
+        // Changes when the file at that path is replaced.
+        public static string ExeStamp(string path)
+        {
+            try { FileInfo f = new FileInfo(path); return f.Length + "@" + f.LastWriteTimeUtc.Ticks; }
+            catch (IOException) { return ""; }
         }
     }
 }

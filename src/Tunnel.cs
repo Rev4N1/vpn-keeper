@@ -36,6 +36,13 @@ namespace VpnKeeper
             return null;
         }
 
+        public string ButtonCaptions()
+        {
+            List<string> seen = new List<string>();
+            foreach (Win b in Of("button")) seen.Add("\"" + b.Caption + "\"");
+            return string.Join(", ", seen.ToArray());
+        }
+
         // The window title and its labels, e.g. for an error message box.
         public string Summary()
         {
@@ -49,7 +56,7 @@ namespace VpnKeeper
     {
         public bool Running;
         public List<Win> Windows = new List<Win>();
-        public Win Main, StatusLabel, PasswordDialog, OtpDialog;
+        public Win Main, StatusLabel, PasswordDialog, OtpDialog, ChangeDialog;
         public List<Win> MessageBoxes = new List<Win>();
 
         public VpnState State
@@ -77,6 +84,14 @@ namespace VpnKeeper
             }
         }
 
+        // Every visible window but the main one, for the log.
+        public string OnScreen()
+        {
+            List<string> seen = new List<string>();
+            foreach (Win w in Windows) if (w.Visible && w != Main) seen.Add("[" + w.Class + "] " + w.Summary() + " buttons " + w.ButtonCaptions());
+            return seen.Count == 0 ? "no other window" : string.Join("; ", seen.ToArray());
+        }
+
         public string ButtonList()
         {
             List<string> seen = new List<string>();
@@ -100,6 +115,77 @@ namespace VpnKeeper
                 || s.Contains("desconectando") || s.Contains("reconnect") || s.Contains("reconect")) return VpnState.Busy;
             if (s.StartsWith("connected") || s.StartsWith("conectado")) return VpnState.Up;
             return VpnState.NoWindow;
+        }
+
+        // A prompt for a new password (the old one expired), English or Spanish.
+        public static bool AsksNewPassword(Win w)
+        {
+            string s = w.Summary().ToLowerInvariant();
+            foreach (string k in new[] { "new password", "change password", "change your password", "nueva contrase", "cambiar contrase", "cambiar la contrase", "cambio de contrase" })
+                if (s.Contains(k)) return true;
+            return false;
+        }
+
+        // A window's layout for studying later: title, class, and each control's
+        // kind, class, caption and state. Box contents are never included.
+        public static string Dump(Win w)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("window \"" + w.Text + "\" class " + w.Class + (w.Visible ? "" : " (hidden)"));
+            foreach (Win k in w.Kids)
+                sb.AppendLine("  " + k.Kind + " [" + k.Class + "] " + (k.Kind == "edit" ? "(contents not saved)" : "\"" + k.Text + "\"") + (k.Enabled ? "" : " (disabled)"));
+            return sb.ToString();
+        }
+
+        // Answers to "change your password now?", English and Spanish.
+        public static readonly string[] YesCaptions = { "Yes", "Sí", "Si", "Change", "Change Password", "Change now", "Cambiar", "Cambiar contraseña", "Cambiar ahora", "OK", "Aceptar" };
+        public static readonly string[] NoCaptions = { "No", "Not now", "Later", "Remind me later", "Skip", "Continue", "Cancel", "Ahora no", "Más tarde", "Recordar más tarde", "Omitir", "Continuar", "Cancelar" };
+        public static readonly string[] SubmitCaptions = { "OK", "Aceptar", "Change", "Cambiar", "Save", "Guardar", "Submit", "Enviar" };
+
+        // A question offering to change the password (it is about to expire).
+        public static bool OffersPasswordChange(string text)
+        {
+            string s = text.ToLowerInvariant();
+            if (!s.Contains("password") && !s.Contains("contrase")) return false;
+            foreach (string k in new[] { "change", "cambi", "expire", "caduc", "venc" })
+                if (s.Contains(k)) return true;
+            return false;
+        }
+
+        // The boxes of a change prompt, by their labels (old/current, new,
+        // confirm/again), else by order: the last is confirm, the one before
+        // new, the one before that old. A user box, if any, is skipped.
+        public static void ChangeFields(Win d, out Win oldBox, out Win newBox, out Win confirmBox)
+        {
+            oldBox = newBox = confirmBox = null;
+            List<Win> unlabelled = new List<Win>();
+            string label = "";
+            foreach (Win k in d.Kids)
+            {
+                if (k.Kind == "static") { label = k.Text.ToLowerInvariant(); continue; }
+                if (k.Kind != "edit") continue;
+                if (label.Contains("user") || label.Contains("usuario")) { }
+                else if (confirmBox == null && (label.Contains("confirm") || label.Contains("again") || label.Contains("repe") || label.Contains("verif"))) confirmBox = k;
+                else if (newBox == null && (label.Contains("new") || label.Contains("nueva") || label.Contains("nuevo"))) newBox = k;
+                else if (oldBox == null && (label.Contains("old") || label.Contains("current") || label.Contains("actual") || label.Contains("anterior") || label.Contains("antigu"))) oldBox = k;
+                else unlabelled.Add(k);
+                label = "";
+            }
+            if (confirmBox == null && unlabelled.Count > 0) { confirmBox = unlabelled[unlabelled.Count - 1]; unlabelled.RemoveAt(unlabelled.Count - 1); }
+            if (newBox == null && unlabelled.Count > 0) { newBox = unlabelled[unlabelled.Count - 1]; unlabelled.RemoveAt(unlabelled.Count - 1); }
+            if (oldBox == null && unlabelled.Count > 0) oldBox = unlabelled[unlabelled.Count - 1];
+            if (newBox == null) { newBox = confirmBox; confirmBox = null; }   // a single box
+        }
+
+        // A notice saying the password is wrong or has expired. "Will expire in
+        // 5 days" is only a warning and does not match.
+        public static bool PasswordRefused(string notice)
+        {
+            string s = notice.ToLowerInvariant();
+            if (!s.Contains("password") && !s.Contains("contrase")) return false;
+            foreach (string k in new[] { "incorrect", "invalid", "wrong", "expired", "rejected", "denied", "caducad", "expirad", "inválid", "no válid", "rechazad", "denegad" })
+                if (s.Contains(k)) return true;
+            return false;
         }
 
         public static string StripMnemonic(string text)
@@ -148,7 +234,11 @@ namespace VpnKeeper
 
                 if (status != null && snap.Main == null) { snap.Main = w; snap.StatusLabel = status; }
                 else if (!w.Visible) continue;   // prompts only count while on screen
-                else if (w.Class == "#32770") snap.MessageBoxes.Add(w);
+                // A notice or question: no boxes, and OK, or Yes and No (a Windows message
+                // box, or Connect Tunnel's own, e.g. "session has been idle ... disconnected").
+                else if (edits == 0 && (w.Class == "#32770" || w.Button("OK", "Aceptar", "Close", "Cerrar") != null
+                    || (w.Button(YesCaptions) != null && w.Button(NoCaptions) != null))) snap.MessageBoxes.Add(w);
+                else if (w.Button(SubmitCaptions) != null && (edits >= 3 || AsksNewPassword(w))) snap.ChangeDialog = w;   // old, new, confirm
                 else if (ok && edits == 1) snap.OtpDialog = w;
                 else if (ok && edits >= 2) snap.PasswordDialog = w;
             }
@@ -215,9 +305,13 @@ namespace VpnKeeper
 
         // Posted, not sent: OK on the login prompt opens the next modal dialog,
         // and SendMessage would wait until that one closed.
+        // A button in a window hidden in the tray ignores BM_CLICK; its parent
+        // still takes the click notification (WinForms turns it into Click).
         public static void Click(Win button)
         {
-            PostMessage(button.Handle, BmClick, IntPtr.Zero, IntPtr.Zero);
+            if (IsWindowVisible(button.Handle)) { PostMessage(button.Handle, BmClick, IntPtr.Zero, IntPtr.Zero); return; }
+            IntPtr wParam = (IntPtr)((BnClicked << 16) | (GetDlgCtrlID(button.Handle) & 0xFFFF));
+            PostMessage(GetParent(button.Handle), WmCommand, wParam, button.Handle);
         }
 
         // For a dialog that ignored OK: a mouse press on OK, then Enter in its last box.
@@ -261,7 +355,8 @@ namespace VpnKeeper
 
         const uint WmSetText = 0x000C, WmGetText = 0x000D, WmGetTextLength = 0x000E;
         const uint WmKeyDown = 0x0100, WmKeyUp = 0x0101, WmLButtonDown = 0x0201, WmLButtonUp = 0x0202;
-        const uint BmClick = 0x00F5, SmtoAbortIfHung = 0x0002;
+        const uint BmClick = 0x00F5, SmtoAbortIfHung = 0x0002, WmCommand = 0x0111;
+        const int BnClicked = 0;
         const int VkReturn = 0x0D, GwlStyle = -16, WsVisible = 0x10000000;
 
         delegate bool EnumProc(IntPtr h, IntPtr l);
@@ -271,6 +366,8 @@ namespace VpnKeeper
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
         [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+        [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+        [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
         [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder sb, int max);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);

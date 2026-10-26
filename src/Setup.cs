@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Reflection;
 using System.Text;
 
@@ -19,13 +20,7 @@ namespace VpnKeeper
             // 1. Copy the .exe to a stable place, so autostart keeps working
             //    after the download is deleted.
             string here = Assembly.GetExecutingAssembly().Location;
-            string target = Config.InstalledExe;
-            if (!PathEquals(here, target))
-            {
-                Directory.CreateDirectory(Config.InstallDir);
-                File.Copy(here, target, true);
-                Console.WriteLine("installed to " + target);
-            }
+            if (!PathEquals(here, Config.InstalledExe)) Install(here);
 
             Config cfg = Config.Load();   // the current settings, if any
 
@@ -80,6 +75,50 @@ namespace VpnKeeper
             return 0;
         }
 
+        // Queues a new VPN password (see Watchdog.Store). The running agent reads
+        // it at its next login, so nothing needs restarting.
+        public static int Password()
+        {
+            Console.Write("new VPN password (typing hidden): ");
+            string p = ReadHidden();
+            Console.Write("again, to confirm: ");
+            if (p.Length == 0 || ReadHidden() != p) { Console.WriteLine("  empty or they differ; nothing saved"); return 1; }
+            Console.Write("Force: reconnect now, so the VPN can ask straight away? [y/N]: ");
+            string a = Console.ReadLine();
+            Console.WriteLine(Watchdog.Store(p, a != null && a.Trim().ToLowerInvariant().StartsWith("y"), "the command line"));
+            return 0;
+        }
+
+        // Puts this .exe in place of the installed one, settings and secrets
+        // untouched. No questions and no window, so it works over SSH too.
+        public static int Update()
+        {
+            string here = Assembly.GetExecutingAssembly().Location;
+            if (PathEquals(here, Config.InstalledExe)) { Console.WriteLine("run update from the new vpn-keeper.exe you downloaded, not the installed one"); return 2; }
+            if (!File.Exists(Config.InstalledExe)) { Console.WriteLine("not installed yet; run: vpn-keeper setup"); return 1; }
+            Install(here);
+            Console.WriteLine(Agent.Running()
+                ? "The running vpn-keeper restarts on " + BuildInfo.Version + " within a minute (check: vpn-keeper status)."
+                : "vpn-keeper is not running in this session; it starts with " + BuildInfo.Version + " at the next logon.");
+            return 0;
+        }
+
+        // A running .exe can't be overwritten but can be renamed: move it aside,
+        // and the running copies notice the new file and restart on it.
+        static void Install(string from)
+        {
+            string target = Config.InstalledExe, old = target + ".old";
+            Directory.CreateDirectory(Config.InstallDir);
+            if (File.Exists(target))
+            {
+                try { File.Delete(old); } catch (IOException) { } catch (UnauthorizedAccessException) { }   // still running from the last update
+                if (File.Exists(old)) old = target + "." + DateTime.Now.ToString("yyyyMMddHHmmss") + ".old";
+                File.Move(target, old);
+            }
+            File.Copy(from, target);
+            Console.WriteLine("installed " + BuildInfo.Version + " to " + target);
+        }
+
         public static int Status()
         {
             Config cfg = Config.Load();
@@ -108,6 +147,14 @@ namespace VpnKeeper
             if (lan != null)
                 Console.WriteLine("this PC: " + lan.Address + " on " + lan.Subnet
                     + "  ->  http://" + lan.Address + ":" + cfg.Port + "/health");
+
+            // What the running agent knows: last login, last error, last notice.
+            try
+            {
+                using (WebClient w = new WebClient { Proxy = null })
+                    Console.Write("agent reports:\n  " + w.DownloadString("http://127.0.0.1:" + cfg.Port + "/health").Trim().Replace("\n", "\n  ") + "\n");
+            }
+            catch (WebException) { }
             return 0;
         }
 
@@ -119,6 +166,7 @@ namespace VpnKeeper
             Console.WriteLine("agent stopped");
             Credentials.Delete(Credentials.Vpn);
             Credentials.Delete(Credentials.Otp);
+            Credentials.Delete(Credentials.Change);
             Console.WriteLine("saved VPN password and TOTP seed removed");
 
             // The firewall rule needs admin to remove, same as to create.
@@ -159,7 +207,8 @@ namespace VpnKeeper
             return Config.Split(Ask(what, string.Join(" ", current.ToArray())));
         }
 
-        static void SaveSecret(string label, string target, bool askUser)
+        // Returns false when nothing new was saved.
+        static bool SaveSecret(string label, string target, bool askUser)
         {
             string user = "otp", current;
             bool have = HasSecret(target);
@@ -175,17 +224,24 @@ namespace VpnKeeper
             string secret = ReadHidden();
             if (secret.Length == 0)
             {
-                if (have) { Console.WriteLine("  kept"); return; }
+                if (have) { Console.WriteLine("  kept"); return false; }
                 Console.WriteLine("  (skipped; set it later with vpn-keeper setup)");
-                return;
+                return false;
             }
             if (target == Credentials.Otp)
             {
                 try { Totp.Base32Decode(secret); }
-                catch (FormatException e) { Console.WriteLine("  not saved: " + e.Message); return; }
+                catch (FormatException e) { Console.WriteLine("  not saved: " + e.Message); return false; }
+            }
+            if (askUser)
+            {
+                // A typo would be typed into the VPN and refused: ask twice.
+                Console.Write("  again, to confirm: ");
+                if (ReadHidden() != secret) { Console.WriteLine("  they differ; not saved"); return false; }
             }
             Credentials.Write(target, user, secret);
             Console.WriteLine("  saved");
+            return true;
         }
 
         static bool TryUser(string target, out string user)

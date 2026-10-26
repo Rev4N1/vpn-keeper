@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -14,11 +15,17 @@ namespace VpnKeeper
     //
     //   /proxy.pac   browser auto-configuration, generated from 'allow'
     //   /health      VPN state, last login, last error
+    //   /password    a form to save a new VPN password (needs a current one-time code)
     class Proxy
     {
         readonly int port;
         readonly Rules clients, allow;
         readonly Func<string> health;
+
+        // Checks and saves a new password from the form; returns what to show.
+        public delegate string PasswordSaver(IPAddress from, string code, string password, string confirm, bool force);
+        public PasswordSaver SavePassword;
+        public Func<string> PasswordAsked = delegate { return ""; };   // the VPN asking for a new password, for the page's banner
         TcpListener listener;
         volatile bool stopped;
 
@@ -107,7 +114,7 @@ namespace VpnKeeper
             if (first.Length != 3) { Reply(cs, 400, "Bad request line.\n"); return; }
             string method = first[0], target = first[1], version = first[2];
 
-            if (target.StartsWith("/")) { Local(cs, method, target, me); return; }
+            if (target.StartsWith("/")) { Local(cs, method, target, me, from.Address, lines, buf, headEnd, len); return; }
 
             string host, path = null;
             int port;
@@ -158,12 +165,74 @@ namespace VpnKeeper
             }
         }
 
-        void Local(NetworkStream cs, string method, string target, string me)
+        void Local(NetworkStream cs, string method, string target, string me, IPAddress from, string[] head, byte[] buf, int headEnd, int len)
         {
             string path = target.Split('?')[0];
             if (path == "/proxy.pac") Reply(cs, 200, allow.Pac(me), "application/x-ns-proxy-autoconfig");
-            else if (path == "/health" || path == "/") Reply(cs, 200, "vpn-keeper\n" + health());
+            else if (path == "/health" || path == "/")
+                Reply(cs, 200, "vpn-keeper\n" + health() + (SavePassword != null ? "\nnew VPN password: http://" + me + "/password\n" : ""));
+            else if (path == "/password" && SavePassword != null)
+            {
+                string note = "";
+                if (method == "POST")
+                {
+                    Dictionary<string, string> f = Form(cs, head, buf, headEnd, len);
+                    note = SavePassword(from, Field(f, "code"), Field(f, "password"), Field(f, "confirm"), Field(f, "force").Length > 0);
+                }
+                Reply(cs, 200, PasswordPage(note, PasswordAsked()), "text/html; charset=utf-8");
+            }
             else Reply(cs, 404, "Try /proxy.pac or /health.\n");
+        }
+
+        // Write-only: the page never shows a saved password. The one-time code
+        // proves it is you, not just anyone allowed to use the proxy.
+        static string PasswordPage(string note, string asked)
+        {
+            return "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width\">"
+                + "<title>vpn-keeper password</title><style>body{font:16px sans-serif;max-width:26em;margin:2em auto;padding:0 1em}"
+                + "label{display:block;margin:.8em 0 .2em}input{width:100%;padding:.4em;font:inherit;box-sizing:border-box}"
+                + "button{margin-top:1.2em;padding:.5em 1.2em;font:inherit}p.n{padding:.6em;background:#eee}p.a{padding:.6em;background:#fd8;font-weight:bold}</style></head><body>"
+                + "<h1>New VPN password</h1>"
+                + (note.Length > 0 ? "<p class=n>" + WebUtility.HtmlEncode(note) + "</p>" : "")
+                + (asked.Length > 0 ? "<p class=a>The VPN is asking for a new password: " + WebUtility.HtmlEncode(asked) + "</p>" : "")
+                + "<p>The current password stays in use. vpn-keeper waits, and when the VPN asks for a password change, it changes the password to this one. If the current password stops working (changed elsewhere), it switches to this one.</p>"
+                + "<form method=post autocomplete=off>"
+                + "<label>Current 6-digit code from your authenticator<input name=code inputmode=numeric maxlength=6 required></label>"
+                + "<label>New password<input name=password type=password required></label>"
+                + "<label>New password again<input name=confirm type=password required></label>"
+                + "<label style=\"display:flex;gap:.5em;align-items:center\"><input name=force type=checkbox style=\"width:auto\">Force: reconnect now, so the VPN can ask straight away</label>"
+                + "<button>Save</button></form><p><a href=/health>health</a></p></body></html>";
+        }
+
+        // An application/x-www-form-urlencoded body, at most 4 KB.
+        static Dictionary<string, string> Form(NetworkStream cs, string[] head, byte[] buf, int headEnd, int len)
+        {
+            int length = 0;
+            foreach (string h in head)
+                if (h.StartsWith("content-length:", StringComparison.OrdinalIgnoreCase)) int.TryParse(h.Substring(15).Trim(), out length);
+            length = Math.Min(Math.Max(length, 0), 4096);
+            MemoryStream body = new MemoryStream();
+            body.Write(buf, headEnd + 4, Math.Min(len - headEnd - 4, length));
+            byte[] more = new byte[4096];
+            while (body.Length < length)
+            {
+                int n = cs.Read(more, 0, (int)Math.Min(more.Length, length - body.Length));
+                if (n <= 0) break;
+                body.Write(more, 0, n);
+            }
+            Dictionary<string, string> f = new Dictionary<string, string>();
+            foreach (string pair in Encoding.UTF8.GetString(body.ToArray()).Split('&'))
+            {
+                int eq = pair.IndexOf('=');
+                if (eq > 0) f[WebUtility.UrlDecode(pair.Substring(0, eq))] = WebUtility.UrlDecode(pair.Substring(eq + 1));
+            }
+            return f;
+        }
+
+        static string Field(Dictionary<string, string> f, string name)
+        {
+            string v;
+            return f.TryGetValue(name, out v) ? v : "";
         }
 
         static void Pump(NetworkStream client, NetworkStream upstream)

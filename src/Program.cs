@@ -16,7 +16,9 @@ namespace VpnKeeper
         const string Usage =
 @"vpn-keeper " + BuildInfo.Version + @"
 
-  vpn-keeper setup       set up or update (asks; Enter keeps the current values)
+  vpn-keeper setup       set up or change settings (asks; Enter keeps the current values)
+  vpn-keeper password    queue a new VPN password (used when the VPN asks to change it)
+  vpn-keeper update      install this .exe over the running one (it restarts by itself)
   vpn-keeper status      how everything is, and what to fix
   vpn-keeper uninstall   stop it and remove it from this PC
   vpn-keeper run         run in this window, log on screen (for testing; Ctrl+C stops)";
@@ -37,6 +39,8 @@ namespace VpnKeeper
                     case "agent": return RunAgent(false);      // started by the supervisor
                     case "run": Log.Echo = true; return RunAgent(true);
                     case "setup": return Setup.Run();
+                    case "update": return Setup.Update();
+                    case "password": return Setup.Password();
                     case "netsetup": return Admin.ApplyFromArgs(Skip(args));   // elevated worker, launched by setup with the plan as args
                     case "status": return Setup.Status();
                     case "uninstall": return Setup.Uninstall();
@@ -60,10 +64,10 @@ namespace VpnKeeper
         {
             FreeConsole();   // started from the Startup shortcut: no window
             bool created;
+            string exe = Process.GetCurrentProcess().MainModule.FileName, stamp = Agent.ExeStamp(exe);
             using (Mutex m = new Mutex(true, SupervisorMutex, out created))
             {
                 if (!created) return 0;   // already running in this session
-                string exe = Process.GetCurrentProcess().MainModule.FileName;
                 Log.Info("supervisor started");
                 while (true)
                 {
@@ -74,13 +78,19 @@ namespace VpnKeeper
                         using (Process p = Process.Start(new ProcessStartInfo(exe, "agent") { UseShellExecute = false, CreateNoWindow = true }))
                         {
                             p.WaitForExit();
+                            if (Agent.ExeStamp(exe) != stamp) break;   // updated: hand over to the new .exe
                             Log.Warn("agent exited (code " + p.ExitCode + "); starting it again in 10 s");
                         }
                     }
                     catch (Exception e) { Log.Error("supervisor could not start the agent: " + e.Message); }
                     Thread.Sleep(10000);
                 }
+                m.ReleaseMutex();
             }
+            // The mutex is gone now, so the new supervisor can take over.
+            Log.Info("supervisor restarting on the new vpn-keeper.exe");
+            Process.Start(new ProcessStartInfo(exe, "start") { UseShellExecute = false, CreateNoWindow = true });
+            return 0;
         }
 
         static string[] Skip(string[] args)

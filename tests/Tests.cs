@@ -63,6 +63,18 @@ namespace VpnKeeper
             Eq(VpnState.NoWindow, Tunnel.Classify("Status:"), "label 'Status:'");
             Eq("Connect", Tunnel.StripMnemonic("&Connect"), "mnemonic stripped");
             Eq("Save & Exit", Tunnel.StripMnemonic("Save && E&xit"), "literal && kept");
+
+            Yes(Tunnel.PasswordRefused("Login failed: | The password is incorrect"), "wrong password notice");
+            Yes(Tunnel.PasswordRefused("Your password has expired"), "expired password notice");
+            Yes(Tunnel.PasswordRefused("Su contraseña ha caducado"), "caducada");
+            No(Tunnel.PasswordRefused("Your password will expire in 5 days"), "expiry warning is not a refusal");
+            No(Tunnel.PasswordRefused("Your session has been idle for 30 minutes and has been disconnected."), "idle notice");
+            Win change = new Win { Text = "Change Password" };
+            change.Kids.Add(new Win { Kind = "static", Text = "Enter a new password" });
+            Yes(Tunnel.AsksNewPassword(change), "new-password prompt");
+            Win otp = new Win { Text = "One Time Password Required" };
+            otp.Kids.Add(new Win { Kind = "static", Text = "Enter 6 digit code" });
+            No(Tunnel.AsksNewPassword(otp), "OTP prompt is not a password change");
         }
 
         static void RulesTests()
@@ -237,6 +249,40 @@ namespace VpnKeeper
                 Yes(code == 200 && pac.Contains("FindProxyForURL") && pac.Contains("PROXY 127.0.0.1:" + p.Port), "PAC served");
                 Yes(Raw(p.Port, "GET /health HTTP/1.1", out code).Contains("vpn: Up"), "health page");
                 Raw(p.Port, "GET /nope HTTP/1.1", out code); Eq(404, code, "unknown local path");
+                Raw(p.Port, "GET /password HTTP/1.1", out code); Eq(404, code, "no password page unless the agent offers one");
+
+                // The /password page, with Credential Manager faked.
+                const string Seed = "JBSWY3DPEHPK3PXP";
+                string saved = null;
+                Watchdog.ReadCredential = delegate(string target, out string user, out string secret)
+                {
+                    user = "test.user";
+                    secret = target == Credentials.Otp ? Seed : "old";
+                    return true;
+                };
+                Watchdog.WriteCredential = delegate(string target, string user, string secret) { saved = target + ":" + user + ":" + secret; };
+                p.SavePassword = Watchdog.SavePassword;
+                p.PasswordAsked = delegate { return "the VPN requires a new password now"; };
+                try
+                {
+                    string page = Raw(p.Port, "GET /password HTTP/1.1", out code);
+                    Yes(page.Contains("<form") && page.Contains("name=force type=checkbox") && code == 200, "password page served, with the Force tick");
+                    Yes(page.Contains("The VPN is asking for a new password"), "banner while the VPN asks");
+                    Yes(Raw(p.Port, "GET /health HTTP/1.1", out code).Contains("/password"), "health links to it");
+                    string good = Totp.Code(Totp.Base32Decode(Seed), Totp.Step(DateTime.UtcNow, 30), 6);
+                    string bad = good == "000000" ? "111111" : "000000";
+                    Yes(Post(p.Port, "code=" + bad + "&password=n%26w+pass&confirm=n%26w+pass").Contains("Wrong") && saved == null, "wrong code refused");
+                    Yes(Post(p.Port, "code=" + good + "&password=a&confirm=b").Contains("differ") && saved == null, "mismatch refused");
+                    Yes(Post(p.Port, "code=" + good + "&password=n%26w+pass&confirm=n%26w+pass&force=on").Contains("reconnects now"), "good code accepted");
+                    Eq(Credentials.Change + ":force:n&w pass", saved, "queued (not in use yet), form-decoded, with force");
+                    saved = null;
+                    Yes(Post(p.Port, "code=" + good + "&password=x&confirm=x").Contains("Wrong") && saved == null, "a code works only once");
+                }
+                finally
+                {
+                    Watchdog.ReadCredential = Credentials.TryRead;
+                    Watchdog.WriteCredential = Credentials.Write;
+                }
             }
             finally { p.Stop(); }
 
@@ -251,11 +297,18 @@ namespace VpnKeeper
             const string Password = "s3cret pass!", Seed = "JBSWY3DPEHPK3PXP";
             foreach (Process old in Process.GetProcessesByName("SnwlConnect")) { Fail("a SnwlConnect is already running (pid " + old.Id + ")"); return; }
             Tunnel.Exe = fakeExe;
+            const string NewPassword = "n3w pass!";
+            string saved = "old password", queued = "", queuedUser = "";   // what Credential Manager holds; starts out wrong
             Watchdog.ReadCredential = delegate(string target, out string user, out string secret)
             {
-                user = target == Credentials.Otp ? "otp" : "test.user";
-                secret = target == Credentials.Otp ? Seed : Password;
+                user = target == Credentials.Otp ? "otp" : target == Credentials.Change ? queuedUser : "test.user";
+                secret = target == Credentials.Otp ? Seed : target == Credentials.Change ? queued : saved;
                 return true;
+            };
+            Watchdog.WriteCredential = delegate(string target, string user, string secret)
+            {
+                if (target == Credentials.Vpn) saved = secret;
+                else if (target == Credentials.Change) { queuedUser = user; queued = secret; }
             };
             Config cfg = new Config();
             cfg.Profile = "VPN Example";
@@ -267,21 +320,57 @@ namespace VpnKeeper
                 Yes(snap.Profile != null && snap.Profile.Caption == "VPN Example", "profile read from combo box");
                 Yes(snap.MainButton != null && snap.MainButton.Caption == "Connect", "Connect button found (text is &Connect)");
 
-                // One agent pass logs in and connects.
-                DateTime until = DateTime.Now.AddSeconds(90);
+                // The saved password is refused: the fake asks again, and the agent
+                // must not type it a second time (an account lockout risk).
+                DateTime until = DateTime.Now.AddSeconds(30);
+                while (DateTime.Now < until && !Watchdog.Status.Report().Contains("vpn-keeper password")) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Yes(Watchdog.Status.Report().Contains("refused the saved password"), "refused password reported on /health");
+                for (int i = 0; i < 3; i++) Watchdog.Tick(cfg);
+                Yes(Tunnel.Take().PasswordDialog != null, "refused password not typed again");
+
+                // Queuing the right one (as if changed elsewhere) resumes logins on
+                // its own: the held login switches to it.
+                Watchdog.Store(Password, false, "the tests");
+                until = DateTime.Now.AddSeconds(90);
                 while (DateTime.Now < until && Tunnel.Take().State != VpnState.Up) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 snap = Tunnel.Take();
                 Eq(VpnState.Up, snap.State, "Connected (read from the hidden tray window)");
                 Yes(snap.Main != null && !snap.Main.Visible, "the fake hid its window like the real client");
+                Eq(Password, saved, "switched to the queued password after the old one was refused");
+                Eq("", queued, "queue cleared after switching");
 
-                // The fake expires the session after 6 s and asks again; the loop re-logs in.
+                // Queue a new one with Force while connected: the agent reconnects at
+                // once, the VPN offers a change, and the agent changes it.
+                Watchdog.Store(NewPassword, true, "the tests");
+                Yes(queued == NewPassword && saved == Password, "queued, current password kept");
+                Yes(Watchdog.Status.Report().Contains("new password queued: yes"), "queue shown on /health");
+                until = DateTime.Now.AddSeconds(90);
+                while (DateTime.Now < until && !(saved == NewPassword && Tunnel.Take().State == VpnState.Up && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Eq(NewPassword, saved, "forced: password changed on the VPN, then saved");
+                Eq("", queued, "queue cleared");
+                Yes(Tunnel.Take().State == VpnState.Up, "connected after the change");
+
+                // The fake expires the session after 6 s and asks again; the loop
+                // re-logs in with the new password and, nothing queued, declines the offer.
                 WaitForPrompt(20);
                 until = DateTime.Now.AddSeconds(90);
                 while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Up && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 Yes(Tunnel.Take().State == VpnState.Up && NoPrompt(), "re-logged in after the session expired");
+                Eq(NewPassword, saved, "offer declined (none queued)");
+                Yes(Watchdog.Status.Report().Contains("declined at each login"), "the asking VPN shown on /health");
+
+                // The next expiry is an idle timeout: Disconnected plus a notice that
+                // blocks Connect. The loop closes the notice and logs in again.
+                snap = Tunnel.Take();
+                for (int i = 0; i < 80 && snap.MessageBoxes.Count == 0; i++) { Thread.Sleep(250); snap = Tunnel.Take(); }
+                Yes(snap.MessageBoxes.Count == 1 && snap.State == VpnState.Down, "idle notice read as a notice, VPN Down");
+                until = DateTime.Now.AddSeconds(90);
+                while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Up && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Yes(Tunnel.Take().State == VpnState.Up && NoPrompt(), "re-logged in after the idle-timeout notice (with the new password)");
             }
             finally
             {
+                Watchdog.WriteCredential = Credentials.Write;
                 if (!fake.HasExited) fake.Kill();
                 fake.Dispose();
                 Watchdog.ReadCredential = Credentials.TryRead;
@@ -303,6 +392,16 @@ namespace VpnKeeper
         }
 
         static bool NoPrompt() { Snapshot s = Tunnel.Take(); return s.PasswordDialog == null && s.OtpDialog == null; }
+
+        static string Post(int port, string form)
+        {
+            using (TcpClient c = new TcpClient("127.0.0.1", port))
+            {
+                NetworkStream s = c.GetStream();
+                Write(s, "POST /password HTTP/1.1\r\nHost: tests\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: " + form.Length + "\r\n\r\n" + form);
+                return ReadAll(s, null);
+            }
+        }
 
         static string Raw(int port, string requestLine, out int status)
         {

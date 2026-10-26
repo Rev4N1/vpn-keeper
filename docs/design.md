@@ -40,6 +40,34 @@ Details that matter in practice:
   accept it; they only refuse to be read). `OK` is a *posted* `BM_CLICK`,
   because it opens the next modal dialog. If a dialog ignores it, the agent
   falls back to a mouse click, then Enter.
+- **Notices.** Any window with `OK` and no boxes (e.g. the server's "session has
+  been idle ... disconnected") is closed on sight: while it is open, `Connect`
+  stays enabled but is ignored. A Connect that changes nothing is retried in
+  30 s without the login backoff, since nothing was sent.
+- **Refused or expired password.** A second password prompt in one login, a
+  notice saying the password is wrong or expired, or a required change with
+  nothing queued makes the agent hold: no more logins until the saved
+  password changes or a new one is queued.
+- **New password.** `/password` (a current one-time code, each code once, 5
+  wrong codes lock it for 15 min) queues one in Credential Manager entry
+  `vpn-keeper:change` (empty = none). It is used: in a change prompt (3+
+  boxes or "new password" text; boxes found by label old/current, new,
+  confirm/again, else by order), becoming the saved one once the VPN is up;
+  or, once, when the saved one is refused. A change offer (Yes/No, text about
+  the password changing or expiring) is answered Yes only with one queued. A
+  change prompt shown again for the same password drops it. Force is the
+  entry's user name `force` (so `vpn-keeper password` in another process can
+  set it): the agent clears it and disconnects, so the next login is now.
+- **Dumps.** Each distinct notice, change prompt, or window blocking Connect
+  is written to `dumps\` beside the log: captions, classes and states, never
+  box contents.
+- **Clicking a hidden window.** In the tray, Connect Tunnel's window is
+  hidden and its buttons ignore `BM_CLICK`, so the click goes to the parent as
+  `WM_COMMAND`/`BN_CLICKED`, which WinForms turns into `Click`.
+- **Updating.** A running `.exe` can be renamed but not overwritten:
+  `update` moves it to `.old` and copies the new one in. The agent sees its
+  file change and exits; the supervisor sees it too and starts a new
+  supervisor from the new file, in the same desktop session.
 - **Language.** English and Spanish captions are both recognised.
 
 `vpn-keeper status` prints what the agent currently sees, for when a Connect
