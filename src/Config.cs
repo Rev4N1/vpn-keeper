@@ -81,34 +81,8 @@ namespace VpnKeeper
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             string tmp = path + ".tmp";
             File.WriteAllText(tmp, sb.ToString());
-            try
-            {
-                if (File.Exists(path)) File.Replace(tmp, path, null);
-                else File.Move(tmp, path);
-            }
-            catch (IOException)
-            {
-                // Some file systems do not support Replace (or something holds
-                // the old file open). Move it aside first, so a failed second
-                // move can put the old config back.
-                string backup = path + ".bak";
-                try
-                {
-                    if (File.Exists(path))
-                    {
-                        try { File.Delete(backup); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                        File.Move(path, backup);
-                    }
-                    File.Move(tmp, path);
-                    try { if (File.Exists(backup)) File.Delete(backup); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                }
-                catch
-                {
-                    if (!File.Exists(path) && File.Exists(backup))
-                        try { File.Move(backup, path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-                    throw;
-                }
-            }
+            if (File.Exists(path)) File.Replace(tmp, path, null);
+            else File.Move(tmp, path);
         }
 
         // What is missing (or useless) for the agent to do its job; empty when
