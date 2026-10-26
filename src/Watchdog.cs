@@ -26,7 +26,7 @@ namespace VpnKeeper
         static int failedLogins;
         static DateTime nextLogin = DateTime.MinValue;
         static long lastOtpStep = -1;
-        static DateTime noWindowSince = DateTime.MaxValue;
+        static DateTime noWindowSince = DateTime.MaxValue, busySince = DateTime.MaxValue;
         static string heldPassword;     // the saved password the VPN refused; no login until it changes
         static string changeSent;       // the queued password last typed into a change prompt
         static bool oldRefused;         // a notice said the saved password is wrong; switch to the queued one
@@ -39,6 +39,7 @@ namespace VpnKeeper
             VpnState st = snap.State;
             Status.Set(st);
             if (st != VpnState.NoWindow) noWindowSince = DateTime.MaxValue;
+            if (st != VpnState.Busy) busySince = DateTime.MaxValue;
 
             // A notice left open (the server's idle timeout shows one) keeps the
             // main window modal-blocked, so Connect would never respond: close it first.
@@ -121,6 +122,14 @@ namespace VpnKeeper
                     noWindowSince = DateTime.Now;
                     return 15;
                 case VpnState.Busy:
+                    // Connecting or reconnecting with no prompt is normally seconds;
+                    // stuck for minutes, cancel it so the next pass logs in fresh.
+                    if (busySince == DateTime.MaxValue) busySince = DateTime.Now;
+                    if ((DateTime.Now - busySince).TotalMinutes < 3) return 5;
+                    Win cancelBusy = snap.MainButton;
+                    Log.Warn("Connect Tunnel stuck at '" + snap.StatusLabel.Caption + "' for 3 minutes; cancelling");
+                    if (cancelBusy != null) Tunnel.Click(cancelBusy);
+                    busySince = DateTime.MaxValue;
                     return 5;
                 case VpnState.Down:
                     badChecks = 0;
@@ -128,7 +137,7 @@ namespace VpnKeeper
                     return 5;
             }
 
-            // Up. The check also keeps the session from idling out.
+            // Up. (The check does not stop the server's idle timeout; the login after it does the recovering.)
             if (cfg.CheckUrl.Length == 0 || Probe(cfg.CheckUrl))
             {
                 if (badChecks > 0) Log.Info("check URL answers again");
@@ -402,6 +411,9 @@ namespace VpnKeeper
                 string file = Path.Combine(dir, DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + kind + ".txt");
                 File.WriteAllText(file, text);
                 Log.Info("window layout saved to " + file);
+                string[] all = Directory.GetFiles(dir);   // keep the newest 50; names sort by time
+                Array.Sort(all);
+                for (int i = 0; i < all.Length - 50; i++) File.Delete(all[i]);
             }
             catch (Exception e) { Log.Warn("could not save the window layout: " + e.Message); }
         }
@@ -494,12 +506,14 @@ namespace VpnKeeper
             return "Queued. It waits: when the VPN next asks for a password change, vpn-keeper changes it to this one; if the current one stops working, it switches to this one." + (heldPassword != null ? " Trying it within seconds." : "");
         }
 
-        // Corporate VPN passwords often belong to accounts that lock after a few
-        // failures, so a failed login waits 2 min, then 5, then 60.
+        // A refused password stops logins altogether (Hold). Other failures are
+        // mostly the network or the server, but may still have typed the password,
+        // so they wait 2 min, then 5, then 15: at most 4 tries an hour, within
+        // usual lockout policies, and back within 15 minutes of an outage ending.
         static void Fail(string why, bool setupProblem)
         {
             failedLogins++;
-            int minutes = setupProblem ? 5 : failedLogins == 1 ? 2 : failedLogins == 2 ? 5 : 60;
+            int minutes = setupProblem ? 5 : failedLogins == 1 ? 2 : failedLogins == 2 ? 5 : 15;
             nextLogin = DateTime.Now.AddMinutes(minutes);
             Log.Error("login failed: " + why + "; next try in " + minutes + " min");
             Status.Failed(why);

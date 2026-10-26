@@ -11,7 +11,6 @@ namespace VpnKeeper
     {
         public string Address;   // this PC, e.g. 192.168.1.50
         public string Subnet;    // e.g. 192.168.1.0/24
-        public string Gateway;   // the home router, e.g. 192.168.1.1
 
         // The physical adapter with a gateway on its own subnet. VPN and
         // virtual adapters are skipped by type and name.
@@ -34,7 +33,6 @@ namespace VpnKeeper
                         Lan lan = new Lan();
                         lan.Address = a.Address.ToString();
                         lan.Subnet = FromUint(ip & mask) + "/" + Bits(mask);
-                        lan.Gateway = g.Address.ToString();
                         return lan;
                     }
                 }

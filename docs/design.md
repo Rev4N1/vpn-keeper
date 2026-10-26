@@ -89,15 +89,19 @@ Every 30 s while connected, every few seconds otherwise:
 - a **login prompt open** (the server asking again) → answer it;
 - **Disconnected** → check the selected configuration matches, press Connect,
   enter the password and the code, wait for `Connected`;
-- **Connected** → request the check URL; this also counts as activity, which
-  holds off idle timeouts. Three failures in a row means a dead tunnel:
-  disconnect, so the next pass logs in fresh;
+- **Connected** → request the check URL. Three failures in a row means a dead
+  tunnel: disconnect, so the next pass logs in fresh. (The requests do not
+  hold off the server's idle timeout; the next pass simply logs in again.)
+- **Connecting/Reconnecting** with no prompt for 3 minutes → Cancel;
 - **not running** → start Connect Tunnel.
 
 Safeguards:
 
-- **Lockout-safe.** Corporate passwords often lock after a few bad tries, so a
-  failed login backs off 2, then 5, then 60 minutes.
+- **Lockout-safe.** A refused password is never typed again (see above).
+  Other failed logins back off 2, then 5, then 15 minutes.
+- **Never stuck.** A watchdog pass takes 2 minutes at most; if none completes
+  in 10, the agent exits and the supervisor starts a fresh one. Proxy sockets
+  use TCP keep-alive, so connections whose peer vanished are dropped.
 - **Codes used once.** A one-time code is never reused, and one about to expire
   is held until the next 30-second window.
 - **Secrets** are read from Credential Manager (DPAPI, this user only) at each
@@ -105,9 +109,9 @@ Safeguards:
 
 ## Keeping awake
 
-While the agent runs it holds `ES_SYSTEM_REQUIRED`, like a video player: idle
-sleep is blocked, nothing is reconfigured, and it is released when the agent
-stops. The screen can still turn off and lock. The lid is a separate Windows
+While vpn-keeper runs, the agent and the supervisor both hold
+`ES_SYSTEM_REQUIRED`, like a video player: idle sleep is blocked, nothing is
+reconfigured, and it is released when they stop. The screen can still turn off and lock. The lid is a separate Windows
 setting.
 
 ## The proxy

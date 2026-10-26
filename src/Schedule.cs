@@ -18,16 +18,13 @@ namespace VpnKeeper
         struct Rule { public int Days; public int Start, End; }   // Days: bit per DayOfWeek (Sun=0..Sat=6)
 
         readonly List<Rule> rules = new List<Rule>();   // empty = always
-        public readonly string Text;
-
-        Schedule(string text) { Text = text; }
 
         public bool Always { get { return rules.Count == 0; } }
 
         public static Schedule Parse(string s)
         {
             s = (s ?? "").Trim();
-            Schedule sched = new Schedule(s);
+            Schedule sched = new Schedule();
             if (s.Length == 0 || s.Equals("always", StringComparison.OrdinalIgnoreCase)) return sched;
 
             // Commas only separate; whitespace does the real splitting. A token

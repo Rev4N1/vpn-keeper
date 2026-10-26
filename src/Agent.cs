@@ -16,6 +16,8 @@ namespace VpnKeeper
         static extern uint SetThreadExecutionState(uint flags);
         const uint EsContinuous = 0x80000000, EsSystemRequired = 0x00000001;
 
+        static long lastPass = DateTime.UtcNow.Ticks;   // when the main loop last went round
+
         // Idle sleep would cut the network and the VPN. This blocks it while the
         // calling thread's process runs (like a video player does); the screen
         // may still lock. The supervisor holds it too, so an agent restart is
@@ -44,9 +46,25 @@ namespace VpnKeeper
             proxy.PasswordAsked = Watchdog.Status.Asking;
             proxy.Start();
 
+            // A pass takes 2 minutes at most (a login), so 10 minutes without one
+            // means the agent is stuck: exit, and the supervisor starts a fresh one.
+            new Thread(delegate()
+            {
+                while (true)
+                {
+                    Thread.Sleep(60000);
+                    if (DateTime.UtcNow.Ticks - Interlocked.Read(ref lastPass) > TimeSpan.FromMinutes(10).Ticks)
+                    {
+                        Log.Error("agent stuck for 10 minutes; exiting so the supervisor restarts it");
+                        Environment.Exit(3);
+                    }
+                }
+            }) { IsBackground = true, Name = "stuck-check" }.Start();
+
             string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName, stamp = ExeStamp(exe);
             while (true)
             {
+                Interlocked.Exchange(ref lastPass, DateTime.UtcNow.Ticks);
                 // 'vpn-keeper update' swapped in a new .exe: exit, and the
                 // supervisor starts the new one.
                 if (ExeStamp(exe) != stamp)

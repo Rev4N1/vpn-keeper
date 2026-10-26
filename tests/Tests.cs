@@ -124,7 +124,7 @@ namespace VpnKeeper
 
             // The plan is built in the user's context and passed to the elevated
             // worker as args, so it never re-reads config as the wrong account.
-            Lan lan = new Lan { Address = "192.168.1.50", Subnet = "192.168.1.0/24", Gateway = "192.168.1.1" };
+            Lan lan = new Lan { Address = "192.168.1.50", Subnet = "192.168.1.0/24" };
             Config cfg = new Config();
             cfg.Clients = Config.Split("192.168.1.0/24 10.7.0.0/24");
             AdminPlan plan = Admin.Plan(cfg, lan);

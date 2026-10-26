@@ -95,6 +95,7 @@ namespace VpnKeeper
             IPEndPoint from = (IPEndPoint)client.Client.RemoteEndPoint;
             string me = ((IPEndPoint)client.Client.LocalEndPoint).Address + ":" + Port;
             client.ReceiveTimeout = 30000;
+            KeepAlive(client.Client);
             NetworkStream cs = client.GetStream();
 
             // Read the request first: closing a socket with unread input resets
@@ -141,6 +142,7 @@ namespace VpnKeeper
                     Reply(cs, 502, host + ":" + port + " is unreachable (is the VPN up?)\n");
                     return;
                 }
+                KeepAlive(upstream.Client);
                 NetworkStream us = upstream.GetStream();
                 if (method == "CONNECT")
                 {
@@ -288,6 +290,18 @@ namespace VpnKeeper
             Send(s, "HTTP/1.1 " + code + " " + reason + "\r\nContent-Type: " + type + "\r\nContent-Length: " + b.Length
                 + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
             s.Write(b, 0, b.Length);
+        }
+
+        // Notices a peer that vanished without closing (say, a dropped home VPN):
+        // probes after 60 s idle, every 10 s, so a dead tunnel frees its threads.
+        static void KeepAlive(Socket s)
+        {
+            byte[] v = new byte[12];
+            BitConverter.GetBytes(1).CopyTo(v, 0);
+            BitConverter.GetBytes(60000).CopyTo(v, 4);
+            BitConverter.GetBytes(10000).CopyTo(v, 8);
+            try { s.IOControl(IOControlCode.KeepAliveValues, v, null); }
+            catch (SocketException) { }
         }
 
         static void Send(Stream s, string text)
