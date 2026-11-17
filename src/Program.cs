@@ -18,6 +18,8 @@ namespace VpnKeeper
 
   vpn-keeper setup       set up or change settings (asks; Enter keeps the current values)
   vpn-keeper password    queue a new VPN password (used when the VPN asks to change it)
+  vpn-keeper connect     connect now, even outside the hours, while the proxy is used
+  vpn-keeper disconnect  end that manual connection
   vpn-keeper update      install this .exe over the running one (it restarts by itself)
   vpn-keeper status      how everything is, and what to fix
   vpn-keeper uninstall   stop it and remove it from this PC
@@ -41,6 +43,8 @@ namespace VpnKeeper
                     case "setup": return Setup.Run();
                     case "update": return Setup.Update();
                     case "password": return Setup.Password();
+                    case "connect": return Setup.Connect();
+                    case "disconnect": return Setup.Disconnect();
                     case "netsetup": return Admin.ApplyFromArgs(Skip(args));   // elevated worker, launched by setup with the plan as args
                     case "status": return Setup.Status();
                     case "uninstall": return Setup.Uninstall();

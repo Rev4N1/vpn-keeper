@@ -16,6 +16,7 @@ namespace VpnKeeper
     //   /proxy.pac   browser auto-configuration, generated from 'allow'
     //   /health      VPN state, last login, last error
     //   /password    a form to save a new VPN password (needs a current one-time code)
+    //   /connect     connect once outside the hours (needs a current one-time code)
     class Proxy
     {
         const int MaxConnections = 128;   // a stuck or hostile client cannot exhaust threads
@@ -30,6 +31,11 @@ namespace VpnKeeper
         public delegate string PasswordSaver(IPAddress from, string code, string password, string confirm, bool force);
         public PasswordSaver SavePassword;
         public Func<string> PasswordAsked = delegate { return ""; };   // the VPN asking for a new password, for the page's banner
+        // Starts or ends a manual connection from /connect; returns what to show.
+        public delegate string ConnectHandler(IPAddress from, string action, string code);
+        public ConnectHandler Connect;
+        public Action Traffic = delegate { };     // every forwarded request and copied chunk (see Manual)
+        public Action AwaitVpn = delegate { };    // before connecting upstream: may hold until the VPN is up
         TcpListener listener;
         string bindAddress = "0.0.0.0";
         volatile bool stopped;
@@ -156,6 +162,8 @@ namespace VpnKeeper
                 return;
             }
 
+            Traffic();
+            AwaitVpn();
             using (TcpClient upstream = new TcpClient())
             {
                 try
@@ -189,7 +197,7 @@ namespace VpnKeeper
                 // Whatever followed the head (a TLS hello, a request body) goes up too.
                 if (len > headEnd + 4) us.Write(buf, headEnd + 4, len - headEnd - 4);
                 client.ReceiveTimeout = 0;
-                Pump(cs, us);
+                Pump(cs, us, Traffic);
             }
         }
 
@@ -198,7 +206,9 @@ namespace VpnKeeper
             string path = target.Split('?')[0];
             if (path == "/proxy.pac") Reply(cs, 200, allow.Pac(me), "application/x-ns-proxy-autoconfig");
             else if (path == "/health" || path == "/")
-                Reply(cs, 200, "vpn-keeper\n" + health() + (SavePassword != null ? "\nnew VPN password: http://" + me + "/password\n" : ""));
+                Reply(cs, 200, "vpn-keeper\n" + health()
+                    + (SavePassword != null ? "\nnew VPN password: http://" + me + "/password\n" : "")
+                    + (Connect != null ? "connect outside the hours: http://" + me + "/connect\n" : ""));
             else if (path == "/password" && SavePassword != null)
             {
                 string note = "";
@@ -215,6 +225,21 @@ namespace VpnKeeper
                     }
                 }
                 Reply(cs, 200, PasswordPage(note, PasswordAsked()), "text/html; charset=utf-8");
+            }
+            else if (path == "/connect" && Connect != null)
+            {
+                string note = "";
+                if (method == "POST")
+                {
+                    Dictionary<string, string> f = Form(cs, head, buf, headEnd, len);
+                    try { note = Connect(from, Field(f, "action"), Field(f, "code")); }
+                    catch (Exception e)
+                    {
+                        Log.Error("connect page: " + e.Message);
+                        note = "Could not do it: " + e.Message;
+                    }
+                }
+                Reply(cs, 200, ConnectPage(note, health()), "text/html; charset=utf-8");
             }
             else Reply(cs, 404, "Try /proxy.pac or /health.\n");
         }
@@ -235,6 +260,22 @@ namespace VpnKeeper
                 + "new password again: <input name=confirm type=password required><br>"
                 + "<label><input name=force type=checkbox> force: reconnect now and tick \"change password\" in the login prompt</label><br>"
                 + "<button>save</button></form>\n<a href=/health>health</a></body></html>";
+        }
+
+        // Connect once outside the hours (a weekend, an evening). Starting needs
+        // a current code, like /password; ending needs none.
+        static string ConnectPage(string note, string health)
+        {
+            return "<!doctype html><html><head><meta charset=utf-8><title>vpn-keeper connect</title></head>"
+                + "<body style=\"font-family:monospace;white-space:pre-line\">vpn-keeper\n"
+                + (note.Length > 0 ? "\n" + WebUtility.HtmlEncode(note) + "\n" : "")
+                + "\n" + WebUtility.HtmlEncode(health)
+                + "\nconnect outside the hours: the VPN stays up while this proxy is used, and logs in again on the next request after an idle drop.\n"
+                + "<form method=post autocomplete=off style=\"white-space:normal\">"
+                + "code from your authenticator: <input name=code inputmode=numeric maxlength=6 size=8 required> "
+                + "<button name=action value=connect>connect</button></form>"
+                + "<form method=post style=\"white-space:normal\"><button name=action value=end>end the manual connection</button></form>\n"
+                + "<a href=/health>health</a></body></html>";
         }
 
         // An application/x-www-form-urlencoded body, at most 4 KB.
@@ -268,28 +309,28 @@ namespace VpnKeeper
             return f.TryGetValue(name, out v) ? v : "";
         }
 
-        static void Pump(NetworkStream client, NetworkStream upstream)
+        static void Pump(NetworkStream client, NetworkStream upstream, Action traffic)
         {
             // An exception here must never escape a thread: in .NET Framework an
             // unhandled one ends the whole process, including the VPN watchdog.
             Thread up = new Thread(delegate()
             {
-                try { Copy(client, upstream); }
+                try { Copy(client, upstream, traffic); }
                 catch (Exception e) { Log.Debug("proxy pump: " + e.Message); }
             }) { IsBackground = true, Name = "proxy-up" };
             up.Start();
-            Copy(upstream, client);
+            Copy(upstream, client, traffic);
             up.Join(30000);
         }
 
         // Copies until either side closes, then closes both so the other copy ends too.
-        static void Copy(NetworkStream from, NetworkStream to)
+        static void Copy(NetworkStream from, NetworkStream to, Action traffic)
         {
             byte[] buf = new byte[32768];
             try
             {
                 int n;
-                while ((n = from.Read(buf, 0, buf.Length)) > 0) to.Write(buf, 0, n);
+                while ((n = from.Read(buf, 0, buf.Length)) > 0) { to.Write(buf, 0, n); traffic(); }
             }
             catch (IOException) { }
             catch (SocketException) { }

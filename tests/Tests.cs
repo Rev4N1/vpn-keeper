@@ -30,6 +30,7 @@ namespace VpnKeeper
             Section("schedule", ScheduleTests);
             Section("config file", ConfigFile);
             Section("proxy over real sockets", ProxyTest);
+            Section("manual connection", ManualTests);
             if (args.Length > 0) Section("login against the fake Connect Tunnel", delegate { Login(args[0]); });
             else Console.WriteLine("(login test skipped: pass the fake SnwlConnect.exe to run it)");
             Console.WriteLine(passed + " passed, " + failed + " failed");
@@ -312,6 +313,91 @@ namespace VpnKeeper
             finally { closed.Stop(); origin.Stop(); }
         }
 
+        static void ManualTests()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "vpn-keeper-test-" + Guid.NewGuid().ToString("N"));
+            string saved = Manual.FilePath;
+            Manual.FilePath = Path.Combine(dir, "manual");
+            Manual.Reset();
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                Eq(Manual.State.Off, Manual.Check(now), "no session: off");
+                Yes(Manual.Describe(now).StartsWith("off"), "described as off");
+
+                Manual.Start(now);
+                Eq(Manual.State.Active, Manual.Check(now.AddMinutes(1)), "just started: active");
+                Yes(Manual.Describe(now.AddMinutes(1)).StartsWith("on"), "described as on");
+                Eq(Manual.State.Standby, Manual.Check(now.AddMinutes(31)), "30 min without proxy traffic: standby");
+                Yes(Manual.Describe(now.AddMinutes(31)).StartsWith("standby"), "described as standby");
+                Yes(File.Exists(Manual.FilePath), "standby keeps the session");
+                Eq(Manual.State.Off, Manual.Check(now.AddHours(4).AddMinutes(1)), "4 h without proxy traffic: over");
+                No(File.Exists(Manual.FilePath), "an expired session is removed");
+
+                // Proxy traffic wakes standby, and is saved so a restart keeps it.
+                Manual.Start(now.AddHours(-1));
+                Eq(Manual.State.Standby, Manual.Check(now), "an hour quiet: standby");
+                Manual.Traffic();
+                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow), "proxy traffic: active again");
+                Manual.Reset();   // as if the agent restarted
+                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow), "traffic survives a restart");
+
+                // Traffic from before a session must not count against it.
+                Manual.Stop();
+                Manual.Reset();
+                Manual.Traffic();
+                Manual.Start(DateTime.UtcNow.AddHours(2));
+                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow.AddHours(2).AddMinutes(1)), "earlier traffic ignored");
+                Yes(Manual.Stop(), "ended");
+                No(Manual.Stop(), "nothing left to end");
+
+                // The /connect page, with Credential Manager faked.
+                const string Seed = "JBSWY3DPEHPK3PXP";
+                Watchdog.ReadCredential = delegate(string target, out string user, out string secret)
+                {
+                    user = "test.user";
+                    secret = target == Credentials.Otp ? Seed : "old";
+                    return true;
+                };
+                int traffic = 0;
+                Proxy p = new Proxy(0, new Rules(Config.Split("127.0.0.0/8")), new Rules(Config.Split("127.0.0.1/32")), delegate { return "vpn: Down\n"; });
+                p.Start("127.0.0.1");
+                try
+                {
+                    int code;
+                    Raw(p.Port, "GET /connect HTTP/1.1", out code); Eq(404, code, "no connect page unless the agent offers one");
+                    p.Connect = Watchdog.ConnectPage;
+                    p.Traffic = delegate { Interlocked.Increment(ref traffic); };
+                    string page = Raw(p.Port, "GET /connect HTTP/1.1", out code);
+                    Yes(code == 200 && page.Contains("value=connect") && page.Contains("value=end") && page.Contains("vpn: Down"), "connect page served, with the state");
+                    Yes(Raw(p.Port, "GET /health HTTP/1.1", out code).Contains("/connect"), "health links to it");
+                    Eq(0, traffic, "local pages are not traffic");
+
+                    string good = Totp.Code(Totp.Base32Decode(Seed), Totp.Step(DateTime.UtcNow, 30) + 1, 6);
+                    string bad = good == "000000" ? "111111" : "000000";
+                    Yes(PostTo(p.Port, "/connect", "action=connect&code=" + bad).Contains("Wrong") && !File.Exists(Manual.FilePath), "wrong code: not connected");
+                    Yes(PostTo(p.Port, "/connect", "action=connect&code=" + good).Contains("Connecting") && File.Exists(Manual.FilePath), "good code: connected");
+                    Yes(PostTo(p.Port, "/connect", "action=connect&code=" + good).Contains("Wrong"), "a code works only once");
+                    Yes(PostTo(p.Port, "/connect", "action=end").Contains("Ended") && !File.Exists(Manual.FilePath), "ended from the page");
+
+                    Raw(p.Port, "GET http://127.0.0.1:1/ HTTP/1.1", out code);
+                    Yes(traffic > 0, "a forwarded request is traffic");
+                }
+                finally
+                {
+                    p.Stop();
+                    Watchdog.ReadCredential = Credentials.TryRead;
+                }
+            }
+            finally
+            {
+                Manual.Stop();
+                Manual.Reset();
+                Manual.FilePath = saved;
+                try { Directory.Delete(dir, true); } catch (IOException) { }
+            }
+        }
+
         static void Login(string fakeExe)
         {
             const string Password = "s3cret pass!", Seed = "JBSWY3DPEHPK3PXP";
@@ -391,6 +477,9 @@ namespace VpnKeeper
                 until = DateTime.Now.AddSeconds(90);
                 while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Up && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 Yes(Tunnel.Take().State == VpnState.Up && NoPrompt(), "re-logged in after the idle-timeout notice (with the new password)");
+
+                // Outside the hours, a manual connection follows the proxy's traffic.
+                ManualOutsideHours(cfg);
             }
             finally
             {
@@ -398,6 +487,68 @@ namespace VpnKeeper
                 if (!fake.HasExited) fake.Kill();
                 fake.Dispose();
                 Watchdog.ReadCredential = Credentials.TryRead;
+            }
+        }
+
+        static void ManualOutsideHours(Config cfg)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "vpn-keeper-test-" + Guid.NewGuid().ToString("N"));
+            string savedPath = Manual.FilePath;
+            Manual.FilePath = Path.Combine(dir, "manual");
+            Manual.Reset();
+            DateTime t = DateTime.Now;
+            cfg.Hours = t.AddHours(2).ToString("HH:mm") + "-" + t.AddHours(3).ToString("HH:mm");   // never now
+            try
+            {
+                DateTime until = DateTime.Now.AddSeconds(60);
+                while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Down && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Yes(Tunnel.Take().State == VpnState.Down, "outside the hours: disconnected");
+
+                Manual.Start(DateTime.UtcNow);
+                until = DateTime.Now.AddSeconds(90);
+                while (DateTime.Now < until && Tunnel.Take().State != VpnState.Up) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Eq(VpnState.Up, Tunnel.Take().State, "manual connection: logged in outside the hours");
+
+                // Standby (as if 30+ min without proxy traffic): once it drops, it stays down.
+                Manual.Start(DateTime.UtcNow.AddHours(-1));
+                Manual.Reset();
+                Snapshot snap = Tunnel.Take();
+                if (snap.State == VpnState.Up && snap.MainButton != null) Tunnel.Click(snap.MainButton);
+                bool cameUp = false;
+                until = DateTime.Now.AddSeconds(15);
+                while (DateTime.Now < until)
+                {
+                    Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                    if (Tunnel.Take().State == VpnState.Up && DateTime.Now > until.AddSeconds(-12)) cameUp = true;
+                }
+                No(cameUp, "standby: no login without proxy traffic");
+                Yes(Watchdog.Status.Report().Contains("manual connection: standby"), "standby shown on /health");
+
+                // A proxy request wakes it, and is held until the VPN is up.
+                bool stop = false;
+                Thread loop = new Thread(delegate() { while (!stop) Thread.Sleep(Watchdog.Tick(cfg) * 200); }) { IsBackground = true };
+                loop.Start();
+                Manual.Traffic();
+                DateTime asked = DateTime.Now;
+                Watchdog.AwaitVpn();
+                Eq(VpnState.Up, Watchdog.Status.State, "proxy traffic: logged in again, request held until up");
+                Yes((DateTime.Now - asked).TotalSeconds < 90, "held only until up");
+                stop = true;
+                loop.Join(150000);
+
+                // Ended: back to the hours, so it disconnects.
+                Manual.Stop();
+                until = DateTime.Now.AddSeconds(60);
+                while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Down && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Yes(Tunnel.Take().State == VpnState.Down, "manual connection ended: disconnected");
+            }
+            finally
+            {
+                cfg.Hours = "";
+                Manual.Stop();
+                Manual.Reset();
+                Manual.FilePath = savedPath;
+                try { Directory.Delete(dir, true); } catch (IOException) { }
             }
         }
 
@@ -417,12 +568,14 @@ namespace VpnKeeper
 
         static bool NoPrompt() { Snapshot s = Tunnel.Take(); return s.PasswordDialog == null && s.OtpDialog == null; }
 
-        static string Post(int port, string form)
+        static string Post(int port, string form) { return PostTo(port, "/password", form); }
+
+        static string PostTo(int port, string path, string form)
         {
             using (TcpClient c = new TcpClient("127.0.0.1", port))
             {
                 NetworkStream s = c.GetStream();
-                Write(s, "POST /password HTTP/1.1\r\nHost: tests\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: " + form.Length + "\r\n\r\n" + form);
+                Write(s, "POST " + path + " HTTP/1.1\r\nHost: tests\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: " + form.Length + "\r\n\r\n" + form);
                 return ReadAll(s, null);
             }
         }

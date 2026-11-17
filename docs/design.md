@@ -126,6 +126,24 @@ Safeguards:
 - **Secrets** are read from Credential Manager (DPAPI, this user only) at each
   login and never written to the log.
 
+## Manual connections
+
+Outside `hours`, `vpn-keeper connect` or `/connect` (one-time code needed)
+starts a manual connection: a file `manual` beside the log holding the time of
+the last activity, so the command line can start or end it and an agent restart
+keeps it. The proxy marks activity on every request it forwards and every chunk
+it copies; the agent saves that to the file at most once a minute, and only
+traffic after the start counts.
+
+- **active** (activity in the last 30 min): the watchdog acts as in the hours.
+- **standby** (none for 30 min): a connected VPN is left alone (the server's
+  idle timeout drops it); a disconnected one stays down, and prompts are
+  cancelled as outside the hours. Passes run every 5 s, so a proxy request
+  wakes it within seconds; the proxy holds that request until the state is
+  `Connected` (90 s at most) instead of failing it.
+- **over** (none for 4 h, or `disconnect`): the file is removed, and the
+  hours apply again.
+
 ## Keeping awake
 
 While vpn-keeper runs, the agent and the supervisor both hold
@@ -139,7 +157,8 @@ signed in) is required for it to come back by itself.
 
 A small HTTP proxy (`CONNECT` for https, absolute URLs for http). Names are
 resolved on this PC, so internal names and the VPN's DNS work, and traffic
-follows the VPN's split-tunnel routes. Two lists keep it from being an open
+follows the VPN's split-tunnel routes. Every forwarded request and copied chunk counts as
+activity for a manual connection. Two lists keep it from being an open
 door: `clients` (who may connect) and `allow` (where it may go); anything else
 gets 403. `/proxy.pac` is generated from `allow` and points at the address the
 request arrived on, so browsers send exactly the shared sites to the proxy and

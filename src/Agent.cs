@@ -64,6 +64,9 @@ namespace VpnKeeper
             Proxy proxy = new Proxy(cfg.Port, new Rules(cfg.Clients), new Rules(cfg.Allow), Watchdog.Status.Report);
             proxy.SavePassword = Watchdog.SavePassword;
             proxy.PasswordAsked = Watchdog.Status.Asking;
+            proxy.Connect = Watchdog.ConnectPage;
+            proxy.Traffic = Manual.Traffic;
+            proxy.AwaitVpn = Watchdog.AwaitVpn;
             proxy.Start();
 
             // A pass takes 2 minutes at most (a login), so 10 minutes without one

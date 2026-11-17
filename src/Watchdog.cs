@@ -35,6 +35,18 @@ namespace VpnKeeper
         static bool oldRefused;         // a notice said the saved password is wrong; switch to the queued one
         static bool forced;             // this login was forced from /password
         static string lastConnectProblem;   // avoid repeating the same warning every pass
+        static Manual.State lastManual = Manual.State.Off;
+        static volatile bool manualWaking;  // outside hours with a manual connection: the proxy may wait for the VPN
+
+        // The proxy calls this before forwarding a request. In a manual
+        // connection's standby the request itself is what wakes the VPN (see
+        // Manual.Traffic), so hold it until the VPN is up rather than fail it.
+        public static void AwaitVpn()
+        {
+            if (!manualWaking || Status.State == VpnState.Up) return;
+            DateTime until = DateTime.UtcNow.AddSeconds(90);
+            while (manualWaking && Status.State != VpnState.Up && DateTime.UtcNow < until) Thread.Sleep(500);
+        }
 
         // One pass of the agent loop; returns the seconds until the next.
         public static int Tick(Config cfg)
@@ -50,10 +62,25 @@ namespace VpnKeeper
             // main window modal-blocked, so Connect would never respond: close it first.
             if (Dismiss(snap)) return 2;
 
+            // A manual connection (see Manual) stands in for the hours while it
+            // sees proxy traffic; in standby it lets the VPN drop and stay down
+            // until the next proxy request.
+            bool hours = Schedule.Parse(cfg.Hours).Active(DateTime.Now);
+            Manual.State manual = Manual.Check(DateTime.UtcNow);
+            if (manual != lastManual)
+            {
+                if (manual == Manual.State.Standby) Log.Info("manual connection: no proxy traffic for " + (int)Manual.Idle.TotalMinutes + " min; the next proxy request reconnects");
+                else if (manual == Manual.State.Active && lastManual == Manual.State.Standby) Log.Info("manual connection: proxy traffic again");
+                else if (manual == Manual.State.Off) Log.Info("manual connection over");
+                lastManual = manual;
+            }
+            manualWaking = !hours && manual != Manual.State.Off;
+
             // Outside the allowed hours: keep the VPN down. Cancel any prompt
             // (including a required password change), and disconnect if it is
-            // up; never start a login, even with a queued password.
-            if (!Schedule.Parse(cfg.Hours).Active(DateTime.Now))
+            // up; never start a login, even with a queued password. A manual
+            // connection in standby leaves a connected VPN alone.
+            if (!hours && (manual == Manual.State.Off || (manual == Manual.State.Standby && st != VpnState.Up)))
             {
                 Win prompt = snap.ChangeDialog ?? snap.PasswordDialog ?? snap.OtpDialog;
                 Win cancel = prompt == null ? null : prompt.Button("Cancel", "Cancelar");
@@ -65,13 +92,14 @@ namespace VpnKeeper
                     acted = true;
                 }
                 Win b = snap.MainButton;
-                if (st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
+                if (manual == Manual.State.Off && st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
                 {
                     Log.Info("outside the allowed hours (" + cfg.Hours + "); disconnecting");
                     Tunnel.Click(b);
                     acted = true;
                 }
-                return acted ? 5 : 60;
+                // Short passes: a manual connection may start, or wake, any moment.
+                return acted || manual != Manual.State.Off ? 5 : 10;
             }
 
             // The VPN asks for a new password. With one queued on /password, the
@@ -593,26 +621,60 @@ namespace VpnKeeper
                 if (password.Length == 0) return "The password is empty; nothing saved.";
                 if (password.Length > 256) return "The password is longer than 256 characters; nothing saved.";
                 if (password != confirm) return "The two passwords differ; nothing saved.";
-
-                string user, seed;
-                byte[] key;
-                if (!ReadCredential(Credentials.Otp, out user, out seed)) return "No one-time-code seed is saved on this PC (run vpn-keeper setup).";
-                try { key = Totp.Base32Decode(seed); }
-                catch (FormatException) { return "The saved one-time-code seed is not valid (run vpn-keeper setup)."; }
-                long now = Totp.Step(DateTime.UtcNow, OtpPeriod), hit = -1;
-                for (long s = now - 1; s <= now + 1; s++)
-                    if (s > lastPageStep && Totp.Code(key, s, OtpDigits) == code.Trim()) hit = s;
-                if (hit < 0)
-                {
-                    Log.Warn("password page: wrong code from " + from);
-                    if (++wrongCodes >= 5) { wrongCodes = 0; pageLockedUntil = DateTime.Now.AddMinutes(15); }
-                    return "Wrong or already used code; nothing saved.";
-                }
-                wrongCodes = 0;
-                lastPageStep = hit;
-
+                string wrong = CheckCode(from, code, "password page");
+                if (wrong != null) return wrong + "; nothing saved.";
                 return Store(password, force, "the web page (" + from + ")");
             }
+        }
+
+        // The /connect page: start a manual connection (needs a current
+        // one-time code, like /password) or end one (needs none: it only
+        // takes the VPN down outside hours). Any other action: nothing.
+        public static string ConnectPage(IPAddress from, string action, string code)
+        {
+            if (action == "end")
+            {
+                bool had = Manual.Stop();
+                if (had) Log.Info("manual connection ended from the web page (" + from + ")");
+                return had ? "Ended. Outside the hours, the VPN disconnects within seconds." : "There was no manual connection.";
+            }
+            if (action != "connect") return "";
+            lock (pageGate)
+            {
+                if (DateTime.Now < pageLockedUntil) return "Too many wrong codes. Try again after " + pageLockedUntil.ToString("HH:mm") + ".";
+                string wrong = CheckCode(from, code, "connect page");
+                if (wrong != null) return wrong + "; not connected.";
+            }
+            Manual.Start(DateTime.UtcNow);
+            Log.Info("manual connection requested from the web page (" + from + ")");
+            return ManualStarted;
+        }
+
+        public static readonly string ManualStarted = "Connecting. The VPN stays up while the proxy is used; after "
+            + (int)Manual.Idle.TotalMinutes + " min without proxy traffic it is left to drop, and the next request logs in again. It ends after "
+            + (int)Manual.Expire.TotalHours + " h without proxy traffic, or when ended (vpn-keeper disconnect, or /connect).";
+
+        // A current one-time code, each usable once across the pages; 5 wrong
+        // lock them for 15 minutes. Null if good, else why not. Call under pageGate.
+        static string CheckCode(IPAddress from, string code, string page)
+        {
+            string user, seed;
+            byte[] key;
+            if (!ReadCredential(Credentials.Otp, out user, out seed)) return "No one-time-code seed is saved on this PC (run vpn-keeper setup)";
+            try { key = Totp.Base32Decode(seed); }
+            catch (FormatException) { return "The saved one-time-code seed is not valid (run vpn-keeper setup)"; }
+            long now = Totp.Step(DateTime.UtcNow, OtpPeriod), hit = -1;
+            for (long s = now - 1; s <= now + 1; s++)
+                if (s > lastPageStep && Totp.Code(key, s, OtpDigits) == (code ?? "").Trim()) hit = s;
+            if (hit < 0)
+            {
+                Log.Warn(page + ": wrong code from " + from);
+                if (++wrongCodes >= 5) { wrongCodes = 0; pageLockedUntil = DateTime.Now.AddMinutes(15); }
+                return "Wrong or already used code";
+            }
+            wrongCodes = 0;
+            lastPageStep = hit;
+            return null;
         }
 
         // Queues a new password. The current one stays in use until the VPN asks
@@ -679,6 +741,7 @@ namespace VpnKeeper
         string lastError = "", lastNotice = "", asking = "";
         DateTime askingSince = DateTime.MinValue;
 
+        public VpnState State { get { lock (gate) { return state; } } }
         public void Set(VpnState s) { lock (gate) { if (s != state) { state = s; since = DateTime.Now; Log.Info("state: " + s); } } }
         public void LoggedIn() { lock (gate) { lastLogin = DateTime.Now; lastError = ""; } }
         public void CheckOk() { lock (gate) { lastCheck = DateTime.Now; } }
@@ -708,6 +771,7 @@ namespace VpnKeeper
                     + "VPN asking for a new password: " + (asking.Length == 0 ? "no" : asking + " (first seen " + Time(askingSince) + ")") + "\n"
                     + "new password queued: " + (Watchdog.QueuedPassword().Length > 0 ? "yes" : "no") + "\n"
                     + "password held after a refusal: " + (Watchdog.PasswordHeld ? "yes" : "no") + "\n"
+                    + "manual connection: " + Manual.Describe(DateTime.UtcNow) + "\n"
                     + "version: " + BuildInfo.Version + "\n";
             }
         }

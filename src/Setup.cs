@@ -91,6 +91,23 @@ namespace VpnKeeper
             return note.StartsWith("Queued", StringComparison.Ordinal) ? 0 : 1;
         }
 
+        // A manual connection (see Manual): the agent picks it up within seconds.
+        public static int Connect()
+        {
+            Manual.Start(DateTime.UtcNow);
+            Console.WriteLine(Watchdog.ManualStarted);
+            if (!Agent.Running()) Console.WriteLine("vpn-keeper is not running, though; start it (vpn-keeper setup) for this to do anything.");
+            return 0;
+        }
+
+        public static int Disconnect()
+        {
+            if (!Manual.Stop()) { Console.WriteLine("There was no manual connection."); return 0; }
+            Log.Info("manual connection ended from the command line");
+            Console.WriteLine("Ended. Outside the hours, the VPN disconnects within seconds.");
+            return 0;
+        }
+
         // Puts this .exe in place of the installed one, settings and secrets
         // untouched. No questions and no window, so it works over SSH too.
         public static int Update()
@@ -170,6 +187,7 @@ namespace VpnKeeper
             Console.WriteLine("  allow:     " + Show(string.Join(" ", cfg.Allow.ToArray())));
             Console.WriteLine("  clients:   " + Show(string.Join(" ", cfg.Clients.ToArray())));
             Console.WriteLine("  hours:     " + (cfg.Hours.Length == 0 ? "always" : cfg.Hours + (Schedule.Parse(cfg.Hours).Active(DateTime.Now) ? " (now: on)" : " (now: off)")));
+            Console.WriteLine("  manual:    " + Manual.Describe(DateTime.UtcNow));
 
             Console.WriteLine("  VPN password:  " + (HasSecret(Credentials.Vpn) ? "saved" : "MISSING (run vpn-keeper setup)"));
             Console.WriteLine("  TOTP seed:     " + TotpStatus());
@@ -198,6 +216,7 @@ namespace VpnKeeper
         {
             if (File.Exists(ShortcutPath)) { File.Delete(ShortcutPath); Console.WriteLine("autostart removed"); }
             Console.WriteLine(StopAll() ? "agent stopped" : "agent may still be running (see Task Manager)");
+            Manual.Stop();
             Credentials.Delete(Credentials.Vpn);
             Credentials.Delete(Credentials.Otp);
             Credentials.Delete(Credentials.Change);

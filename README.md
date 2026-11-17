@@ -118,6 +118,8 @@ addresses.
 |---|---|
 | `vpn-keeper setup` | set up, or change settings (Enter keeps each current value) |
 | `vpn-keeper password` | queue a new VPN password (see above) |
+| `vpn-keeper connect` | connect now, even outside the hours, while the proxy is used (see below) |
+| `vpn-keeper disconnect` | end that manual connection |
 | `vpn-keeper update` | run from a newly downloaded `.exe`: installs it over the running one, which restarts on it by itself; settings and secrets stay (works over SSH) |
 | `vpn-keeper status` | what's set, what's running, and what to fix |
 | `vpn-keeper uninstall` | stop it, remove autostart, delete the saved secrets |
@@ -141,6 +143,27 @@ rule the agent keeps the VPN disconnected and never logs in. Empty = always.
 A window whose end is before its start (like `22:00-06:00`) runs overnight and
 belongs to the day it starts: `Mon 22:00-06:00` also covers Tuesday until 06:00,
 but not Monday before 22:00.
+
+### Connect once outside the hours
+
+For a weekend or an evening, start a **manual connection** with
+`vpn-keeper connect` on the PC, or on `http://<pc>:8080/connect` from any
+client (it asks for a current one-time code, like `/password`). It follows the
+proxy's traffic:
+
+- while the proxy is used, the VPN is kept up and logged in again whenever it
+  drops, as during the hours;
+- after 30 minutes without proxy traffic it is left alone, so the server's idle
+  timeout can drop it, and it stays down. The **next request through the proxy
+  logs in again**; the proxy holds that request (up to 90 s) until the VPN is
+  up, so the page just loads a little slower;
+- after 4 hours without proxy traffic the manual connection ends, and outside
+  the hours the VPN is disconnected. `vpn-keeper disconnect` (or *end* on
+  `/connect`) ends it at once.
+
+Only traffic through the proxy counts, not the PC's own use of the VPN or the
+check URL. Started during the hours, it keeps the VPN up past the window's end
+for as long as it is used. `/health` and `vpn-keeper status` show it.
 
 ## Build
 
