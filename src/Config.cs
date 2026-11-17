@@ -16,6 +16,7 @@ namespace VpnKeeper
         public List<string> Clients = new List<string>(); // who may use the proxy
         public int Port = 8080;
         public string Hours = "";   // when the VPN may be connected (see Schedule); empty = always
+        public int ManualIdle = 30; // a manual connection ends after this many minutes without proxy traffic (see Manual)
         public int KeepActive;      // press F15 after this many minutes without input while the VPN is up (see Input); 0 = off
 
         public static string InstallDir
@@ -60,6 +61,10 @@ namespace VpnKeeper
                         catch (FormatException e) { throw new FormatException(path + ":" + n + ": " + e.Message); }
                         c.Hours = v;
                         break;
+                    case "manual_idle":
+                        if (!int.TryParse(v, out c.ManualIdle) || c.ManualIdle < 1 || c.ManualIdle > 10080)
+                            throw new FormatException(path + ":" + n + ": manual_idle must be minutes, 1-10080");
+                        break;
                     case "keep_active":
                         if (v.Length == 0) { c.KeepActive = 0; break; }
                         if (!int.TryParse(v, out c.KeepActive) || c.KeepActive < 0 || c.KeepActive > 1440)
@@ -81,6 +86,7 @@ namespace VpnKeeper
             sb.AppendLine("clients   = " + string.Join(" ", Clients.ToArray()));
             sb.AppendLine("port      = " + Port);
             sb.AppendLine("hours     = " + Hours + "   # when the VPN may be on, e.g. Mon-Thu 07:45-17:00, Fri 07:45-15:00; empty = always");
+            sb.AppendLine("manual_idle = " + ManualIdle + "   # vpn-keeper connect: ends after this many minutes without traffic through the proxy");
             sb.AppendLine("keep_active = " + KeepActive + "   # press F15 after this many minutes without keyboard/mouse input while the VPN is up; 0 = off");
 
             // Write beside it, then swap it in: a crash or full disk midway must

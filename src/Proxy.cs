@@ -35,7 +35,7 @@ namespace VpnKeeper
         public delegate string ConnectHandler(IPAddress from, string action, string code);
         public ConnectHandler Connect;
         public Action Traffic = delegate { };     // every forwarded request and copied chunk (see Manual)
-        public Action AwaitVpn = delegate { };    // before connecting upstream: may hold until the VPN is up
+        public Action AwaitVpn = delegate { };    // before connecting upstream: may hold while the VPN logs in again
         TcpListener listener;
         string bindAddress = "0.0.0.0";
         volatile bool stopped;
@@ -270,7 +270,7 @@ namespace VpnKeeper
                 + "<body style=\"font-family:monospace;white-space:pre-line\">vpn-keeper\n"
                 + (note.Length > 0 ? "\n" + WebUtility.HtmlEncode(note) + "\n" : "")
                 + "\n" + WebUtility.HtmlEncode(health)
-                + "\nconnect outside the hours: the VPN stays up while this proxy is used, and logs in again on the next request after an idle drop.\n"
+                + "\nconnect outside the hours: the VPN stays up until this proxy goes unused for a while (manual_idle).\n"
                 + "<form method=post autocomplete=off style=\"white-space:normal\">"
                 + "code from your authenticator: <input name=code inputmode=numeric maxlength=6 size=8 required> "
                 + "<button name=action value=connect>connect</button></form>"

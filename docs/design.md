@@ -135,14 +135,11 @@ keeps it. The proxy marks activity on every request it forwards and every chunk
 it copies; the agent saves that to the file at most once a minute, and only
 traffic after the start counts.
 
-- **active** (activity in the last 30 min): the watchdog acts as in the hours.
-- **standby** (none for 30 min): a connected VPN is left alone (the server's
-  idle timeout drops it); a disconnected one stays down, and prompts are
-  cancelled as outside the hours. Passes run every 5 s, so a proxy request
-  wakes it within seconds; the proxy holds that request until the state is
-  `Connected` (2.5 min at most, a login's longest) instead of failing it.
-- **over** (none for 4 h, or `disconnect`): the file is removed, and the
-  hours apply again.
+While the last activity is under `manual_idle` minutes old, the watchdog acts
+as in the hours, and the proxy holds a request made while the VPN is logging
+in again until the state is `Connected` (2.5 min at most, a login's longest)
+instead of failing it. Once it is older, or after `disconnect`, the file is
+removed and the hours apply again.
 
 ## keep_active
 

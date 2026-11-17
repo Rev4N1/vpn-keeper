@@ -57,6 +57,14 @@ namespace VpnKeeper
                 catch (FormatException e) { Console.WriteLine("  " + e.Message); }
             }
 
+            while (true)
+            {
+                string k = Ask("'vpn-keeper connect' (outside the hours): end it after how many minutes without proxy traffic", cfg.ManualIdle.ToString());
+                int m;
+                if (int.TryParse(k, out m) && m >= 1 && m <= 10080) { cfg.ManualIdle = m; break; }
+                Console.WriteLine("  a number of minutes, 1-10080");
+            }
+
             // Optional: keep the session "active" with a harmless key press.
             while (true)
             {
@@ -103,8 +111,10 @@ namespace VpnKeeper
         // A manual connection (see Manual): the agent picks it up within seconds.
         public static int Connect()
         {
+            try { Manual.Idle = TimeSpan.FromMinutes(Config.Load().ManualIdle); }
+            catch (Exception) { }   // a broken config: the default; the agent reports the config
             Manual.Start(DateTime.UtcNow);
-            Console.WriteLine(Watchdog.ManualStarted);
+            Console.WriteLine(Manual.Started());
             if (!Agent.Running()) Console.WriteLine("vpn-keeper is not running, though; start it (vpn-keeper setup) for this to do anything.");
             return 0;
         }
@@ -196,7 +206,8 @@ namespace VpnKeeper
             Console.WriteLine("  allow:     " + Show(string.Join(" ", cfg.Allow.ToArray())));
             Console.WriteLine("  clients:   " + Show(string.Join(" ", cfg.Clients.ToArray())));
             Console.WriteLine("  hours:     " + (cfg.Hours.Length == 0 ? "always" : cfg.Hours + (Schedule.Parse(cfg.Hours).Active(DateTime.Now) ? " (now: on)" : " (now: off)")));
-            Console.WriteLine("  manual:    " + Manual.Describe(DateTime.UtcNow));
+            Manual.Idle = TimeSpan.FromMinutes(cfg.ManualIdle);
+            Console.WriteLine("  manual:    " + Manual.Describe(DateTime.UtcNow) + "; manual_idle " + cfg.ManualIdle + " min");
             Console.WriteLine("  keep_active: " + (cfg.KeepActive == 0 ? "off" : "F15 after " + cfg.KeepActive + " min without input, while the VPN is up"));
 
             Console.WriteLine("  VPN password:  " + (HasSecret(Credentials.Vpn) ? "saved" : "MISSING (run vpn-keeper setup)"));

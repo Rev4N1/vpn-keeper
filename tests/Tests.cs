@@ -203,6 +203,10 @@ namespace VpnKeeper
                 Yes(Throws(delegate { File.WriteAllText(f, "port = 0\n"); Config.Load(f); }), "bad port rejected");
                 Yes(Throws(delegate { File.WriteAllText(f, "colour = blue\n"); Config.Load(f); }), "unknown key rejected");
                 Eq(0, Config.Load(f + ".missing").KeepActive, "keep_active off by default");
+                Eq(30, Config.Load(f + ".missing").ManualIdle, "manual_idle 30 min by default");
+                File.WriteAllText(f, "manual_idle = 90\n");
+                Eq(90, Config.Load(f).ManualIdle, "manual_idle read");
+                Yes(Throws(delegate { File.WriteAllText(f, "manual_idle = 0\n"); Config.Load(f); }), "manual_idle 0 rejected");
                 File.WriteAllText(f, "keep_active = 25\n");
                 Eq(25, Config.Load(f).KeepActive, "keep_active read");
                 Yes(Throws(delegate { File.WriteAllText(f, "keep_active = -1\n"); Config.Load(f); }), "negative keep_active rejected");
@@ -330,39 +334,42 @@ namespace VpnKeeper
             try
             {
                 DateTime now = DateTime.UtcNow;
-                Eq(Manual.State.Off, Manual.Check(now), "no session: off");
+                Manual.Idle = TimeSpan.FromMinutes(30);
+                No(Manual.Check(now), "no session: off");
                 Yes(Manual.Describe(now).StartsWith("off"), "described as off");
 
                 Manual.Start(now);
-                Eq(Manual.State.Active, Manual.Check(now.AddMinutes(1)), "just started: active");
-                Yes(Manual.Describe(now.AddMinutes(1)).StartsWith("on"), "described as on");
-                Eq(Manual.State.Standby, Manual.Check(now.AddMinutes(31)), "30 min without proxy traffic: standby");
-                Yes(Manual.Describe(now.AddMinutes(31)).StartsWith("standby"), "described as standby");
-                Yes(File.Exists(Manual.FilePath), "standby keeps the session");
-                Eq(Manual.State.Off, Manual.Check(now.AddHours(4).AddMinutes(1)), "4 h without proxy traffic: over");
+                Yes(Manual.Check(now.AddMinutes(1)), "just started: on");
+                Yes(Manual.Describe(now.AddMinutes(1)).StartsWith("on") && Manual.Describe(now.AddMinutes(1)).Contains("29 more min"), "described as on, with the time left");
+                Yes(Manual.Check(now.AddMinutes(29)), "29 min without proxy traffic: still on");
+                No(Manual.Check(now.AddMinutes(30)), "manual_idle without proxy traffic: over");
                 No(File.Exists(Manual.FilePath), "an expired session is removed");
 
-                // Proxy traffic wakes standby, and is saved so a restart keeps it.
-                Manual.Start(now.AddHours(-1));
-                Eq(Manual.State.Standby, Manual.Check(now), "an hour quiet: standby");
+                Manual.Idle = TimeSpan.FromMinutes(120);
+                Manual.Start(now);
+                Yes(Manual.Check(now.AddMinutes(90)), "manual_idle 120: still on after 90 min");
+                Manual.Idle = TimeSpan.FromMinutes(30);
+
+                // Proxy traffic keeps it on, and is saved so a restart keeps it.
+                Manual.Start(now.AddMinutes(-20));
                 Manual.Traffic();
-                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow), "proxy traffic: active again");
+                Yes(Manual.Check(DateTime.UtcNow.AddMinutes(25)), "proxy traffic restarts the countdown");
                 Manual.Reset();   // as if the agent restarted
-                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow), "traffic survives a restart");
+                Yes(Manual.Check(DateTime.UtcNow.AddMinutes(25)), "traffic survives a restart");
 
                 // Traffic from before a session must not count against it.
                 Manual.Stop();
                 Manual.Reset();
                 Manual.Traffic();
                 Manual.Start(DateTime.UtcNow.AddHours(2));
-                Eq(Manual.State.Active, Manual.Check(DateTime.UtcNow.AddHours(2).AddMinutes(1)), "earlier traffic ignored");
+                Yes(Manual.Check(DateTime.UtcNow.AddHours(2).AddMinutes(1)), "earlier traffic ignored");
                 Yes(Manual.Stop(), "ended");
                 No(Manual.Stop(), "nothing left to end");
 
                 // A damaged file is no session, even with proxy traffic.
                 Manual.Traffic();
                 File.WriteAllText(Manual.FilePath, "garbage");
-                Eq(Manual.State.Off, Manual.Check(DateTime.UtcNow), "damaged file: off");
+                No(Manual.Check(DateTime.UtcNow), "damaged file: off");
                 No(File.Exists(Manual.FilePath), "damaged file removed");
                 Manual.Reset();
 
@@ -524,32 +531,35 @@ namespace VpnKeeper
                 while (DateTime.Now < until && Tunnel.Take().State != VpnState.Up) Thread.Sleep(Watchdog.Tick(cfg) * 200);
                 Eq(VpnState.Up, Tunnel.Take().State, "manual connection: logged in outside the hours");
 
-                // Standby (as if 30+ min without proxy traffic): once it drops, it stays down.
-                Manual.Start(DateTime.UtcNow.AddHours(-1));
-                Manual.Reset();
+                // A drop while on logs in again, and a proxy request made
+                // meanwhile is held until the VPN is up.
                 Snapshot snap = Tunnel.Take();
                 if (snap.State == VpnState.Up && snap.MainButton != null) Tunnel.Click(snap.MainButton);
-                bool cameUp = false;
-                until = DateTime.Now.AddSeconds(15);
-                while (DateTime.Now < until)
-                {
-                    Thread.Sleep(Watchdog.Tick(cfg) * 200);
-                    if (Tunnel.Take().State == VpnState.Up && DateTime.Now > until.AddSeconds(-12)) cameUp = true;
-                }
-                No(cameUp, "standby: no login without proxy traffic");
-                Yes(Watchdog.Status.Report().Contains("manual connection: standby"), "standby shown on /health");
-
-                // A proxy request wakes it, and is held until the VPN is up.
+                WaitFor(VpnState.Down, 10);
                 bool stop = false;
                 Thread loop = new Thread(delegate() { while (!stop) Thread.Sleep(Watchdog.Tick(cfg) * 200); }) { IsBackground = true };
                 loop.Start();
-                Manual.Traffic();
+                Thread.Sleep(1000);
                 DateTime asked = DateTime.Now;
                 Watchdog.AwaitVpn();
-                Eq(VpnState.Up, Watchdog.Status.State, "proxy traffic: logged in again, request held until up");
+                Eq(VpnState.Up, Watchdog.Status.State, "dropped while on: logged in again, request held until up");
                 Yes((DateTime.Now - asked).TotalSeconds < 150, "held only until up");
                 stop = true;
                 loop.Join(150000);
+                Yes(Watchdog.Status.Report().Contains("manual connection: on"), "shown on /health");
+
+                // manual_idle without proxy traffic: over, and disconnected.
+                Manual.Start(DateTime.UtcNow.AddMinutes(-cfg.ManualIdle));
+                Manual.Reset();
+                until = DateTime.Now.AddSeconds(60);
+                while (DateTime.Now < until && !(Tunnel.Take().State == VpnState.Down && NoPrompt())) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Yes(Tunnel.Take().State == VpnState.Down && !File.Exists(Manual.FilePath), "idle too long: over and disconnected");
+
+                // Started again, then ended by hand.
+                Manual.Start(DateTime.UtcNow);
+                until = DateTime.Now.AddSeconds(90);
+                while (DateTime.Now < until && Tunnel.Take().State != VpnState.Up) Thread.Sleep(Watchdog.Tick(cfg) * 200);
+                Eq(VpnState.Up, Tunnel.Take().State, "connected again");
 
                 // Ended: back to the hours, so it disconnects.
                 Manual.Stop();

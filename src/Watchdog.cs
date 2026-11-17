@@ -35,17 +35,16 @@ namespace VpnKeeper
         static bool oldRefused;         // a notice said the saved password is wrong; switch to the queued one
         static bool forced;             // this login was forced from /password
         static string lastConnectProblem;   // avoid repeating the same warning every pass
-        static Manual.State lastManual = Manual.State.Off;
-        static volatile bool manualWaking;  // outside hours with a manual connection: the proxy may wait for the VPN
+        static volatile bool manualOn;  // outside hours with a manual connection: the proxy waits for the VPN
 
-        // The proxy calls this before forwarding a request. In a manual
-        // connection's standby the request itself is what wakes the VPN (see
-        // Manual.Traffic), so hold it until the VPN is up rather than fail it.
+        // The proxy calls this before forwarding a request. During a manual
+        // connection outside the hours, a request made while the VPN is
+        // logging in again is held until it is up, rather than failed.
         public static void AwaitVpn()
         {
-            if (!manualWaking || Status.State == VpnState.Up) return;
+            if (!manualOn || Status.State == VpnState.Up) return;
             DateTime until = DateTime.UtcNow.AddSeconds(150);   // a login takes 2 min at most
-            while (manualWaking && Status.State != VpnState.Up && DateTime.UtcNow < until) Thread.Sleep(500);
+            while (manualOn && Status.State != VpnState.Up && DateTime.UtcNow < until) Thread.Sleep(500);
         }
 
         // One pass of the agent loop; returns the seconds until the next.
@@ -62,25 +61,16 @@ namespace VpnKeeper
             // main window modal-blocked, so Connect would never respond: close it first.
             if (Dismiss(snap)) return 2;
 
-            // A manual connection (see Manual) stands in for the hours while it
-            // sees proxy traffic; in standby it lets the VPN drop and stay down
-            // until the next proxy request.
+            // A manual connection (see Manual) stands in for the hours.
             bool hours = Schedule.Parse(cfg.Hours).Active(DateTime.Now);
-            Manual.State manual = Manual.Check(DateTime.UtcNow);
-            if (manual != lastManual)
-            {
-                if (manual == Manual.State.Standby) Log.Info("manual connection: no proxy traffic for " + (int)Manual.Idle.TotalMinutes + " min; the next proxy request reconnects");
-                else if (manual == Manual.State.Active && lastManual == Manual.State.Standby) Log.Info("manual connection: proxy traffic again");
-                else if (manual == Manual.State.Off) Log.Info("manual connection over");
-                lastManual = manual;
-            }
-            manualWaking = !hours && manual != Manual.State.Off;
+            Manual.Idle = TimeSpan.FromMinutes(cfg.ManualIdle);
+            bool manual = Manual.Check(DateTime.UtcNow);
+            manualOn = !hours && manual;
 
             // Outside the allowed hours: keep the VPN down. Cancel any prompt
             // (including a required password change), and disconnect if it is
-            // up; never start a login, even with a queued password. A manual
-            // connection in standby leaves a connected VPN alone.
-            if (!hours && (manual == Manual.State.Off || (manual == Manual.State.Standby && st != VpnState.Up)))
+            // up; never start a login, even with a queued password.
+            if (!hours && !manual)
             {
                 Win prompt = snap.ChangeDialog ?? snap.PasswordDialog ?? snap.OtpDialog;
                 Win cancel = prompt == null ? null : prompt.Button("Cancel", "Cancelar");
@@ -92,14 +82,14 @@ namespace VpnKeeper
                     acted = true;
                 }
                 Win b = snap.MainButton;
-                if (manual == Manual.State.Off && st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
+                if (st == VpnState.Up && b != null && Tunnel.Is(b, "Disconnect", "Desconectar"))
                 {
                     Log.Info("outside the allowed hours (" + cfg.Hours + "); disconnecting");
                     Tunnel.Click(b);
                     acted = true;
                 }
-                // Short passes: a manual connection may start, or wake, any moment.
-                return acted || manual != Manual.State.Off ? 5 : 10;
+                // Short passes: a manual connection may start any moment.
+                return acted ? 5 : 10;
             }
 
             // The VPN asks for a new password. With one queued on /password, the
@@ -647,12 +637,8 @@ namespace VpnKeeper
             }
             Manual.Start(DateTime.UtcNow);
             Log.Info("manual connection requested from the web page (" + from + ")");
-            return ManualStarted;
+            return Manual.Started();
         }
-
-        public static readonly string ManualStarted = "Connecting. The VPN stays up while the proxy is used; after "
-            + (int)Manual.Idle.TotalMinutes + " min without proxy traffic it is left to drop, and the next request logs in again. It ends after "
-            + (int)Manual.Expire.TotalHours + " h without proxy traffic, or when ended (vpn-keeper disconnect, or /connect).";
 
         // A current one-time code, each usable once across the pages; 5 wrong
         // lock them for 15 minutes. Null if good, else why not. Call under pageGate.
