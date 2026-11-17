@@ -86,6 +86,7 @@ namespace VpnKeeper
             }) { IsBackground = true, Name = "stuck-check" }.Start();
 
             string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName, stamp = ExeStamp(exe);
+            string cfgStamp = ExeStamp(Config.FilePath);
             while (true)
             {
                 Interlocked.Exchange(ref lastPass, DateTime.UtcNow.Ticks);
@@ -97,6 +98,14 @@ namespace VpnKeeper
                     proxy.Stop();
                     return;
                 }
+                // The settings were edited: exit, and the supervisor starts an
+                // agent that reads them (a broken file then waits for a fix).
+                if (ExeStamp(Config.FilePath) != cfgStamp)
+                {
+                    Log.Info("vpn-keeper.conf changed; restarting to apply it");
+                    proxy.Stop();
+                    return;
+                }
                 int wait;
                 try { wait = Watchdog.Tick(cfg); }
                 catch (Exception e)
@@ -105,6 +114,8 @@ namespace VpnKeeper
                     Log.Debug(e.ToString());
                     wait = 30;
                 }
+                try { Input.KeepActive(cfg.KeepActive, Watchdog.Status.State == VpnState.Up); }
+                catch (Exception e) { Log.Warn("keep_active: " + e.Message); }
                 Thread.Sleep(wait * 1000);
             }
         }

@@ -144,6 +144,17 @@ traffic after the start counts.
 - **over** (none for 4 h, or `disconnect`): the file is removed, and the
   hours apply again.
 
+## keep_active
+
+If set, each agent pass while the VPN is `Connected` reads the session's idle
+time (`GetLastInputInfo`); once it reaches `keep_active` minutes the agent
+sends an F15 press and release (`keybd_event`). It then checks the idle time
+reset; if not (a locked session takes no input), it logs that once. Outside a
+connected VPN nothing is sent, so the screen locks as usual.
+
+The agent also restarts when `vpn-keeper.conf` changes, the same way as after
+an update, so hand edits apply without running `setup`.
+
 ## Keeping awake
 
 While vpn-keeper runs, the agent and the supervisor both hold

@@ -202,6 +202,12 @@ namespace VpnKeeper
                 Eq(9090, c.Port, "port");
                 Yes(Throws(delegate { File.WriteAllText(f, "port = 0\n"); Config.Load(f); }), "bad port rejected");
                 Yes(Throws(delegate { File.WriteAllText(f, "colour = blue\n"); Config.Load(f); }), "unknown key rejected");
+                Eq(0, Config.Load(f + ".missing").KeepActive, "keep_active off by default");
+                File.WriteAllText(f, "keep_active = 25\n");
+                Eq(25, Config.Load(f).KeepActive, "keep_active read");
+                Yes(Throws(delegate { File.WriteAllText(f, "keep_active = -1\n"); Config.Load(f); }), "negative keep_active rejected");
+                Yes(Throws(delegate { File.WriteAllText(f, "keep_active = soon\n"); Config.Load(f); }), "non-number keep_active rejected");
+                Yes(Input.Idle() >= TimeSpan.Zero, "idle time readable");
                 Eq(4, Config.Load(f + ".missing").Problems().Count, "missing file = empty config with four problems");
                 Config badClient = new Config();
                 badClient.Clients = Config.Split("*.corp.example");
@@ -213,10 +219,12 @@ namespace VpnKeeper
                 saved.CheckUrl = "http://10.0.0.1/";
                 saved.Allow = Config.Split("10.0.0.0/8");
                 saved.Clients = Config.Split("192.168.1.0/24 127.0.0.1/32");
+                saved.KeepActive = 25;
                 saved.Save(f);
                 Config back = Config.Load(f);
                 Eq("VPN X", back.Profile, "round-trip profile");
                 Eq(2, back.Clients.Count, "round-trip clients");
+                Eq(25, back.KeepActive, "round-trip keep_active");
                 Eq(0, back.Problems().Count, "a full config has no problems");
                 Yes(!File.Exists(f + ".tmp"), "atomic save leaves no temporary file");
             }

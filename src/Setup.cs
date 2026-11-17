@@ -57,6 +57,15 @@ namespace VpnKeeper
                 catch (FormatException e) { Console.WriteLine("  " + e.Message); }
             }
 
+            // Optional: keep the session "active" with a harmless key press.
+            while (true)
+            {
+                string k = Ask("if the VPN drops when this PC is idle: press F15 after how many minutes without input (0 = off)", cfg.KeepActive.ToString());
+                int m;
+                if (int.TryParse(k, out m) && m >= 0 && m <= 1440) { cfg.KeepActive = m; break; }
+                Console.WriteLine("  a number of minutes, 0-1440");
+            }
+
             cfg.Save(Config.FilePath);
             Console.WriteLine("settings saved to " + Config.FilePath + "\n");
 
@@ -188,6 +197,7 @@ namespace VpnKeeper
             Console.WriteLine("  clients:   " + Show(string.Join(" ", cfg.Clients.ToArray())));
             Console.WriteLine("  hours:     " + (cfg.Hours.Length == 0 ? "always" : cfg.Hours + (Schedule.Parse(cfg.Hours).Active(DateTime.Now) ? " (now: on)" : " (now: off)")));
             Console.WriteLine("  manual:    " + Manual.Describe(DateTime.UtcNow));
+            Console.WriteLine("  keep_active: " + (cfg.KeepActive == 0 ? "off" : "F15 after " + cfg.KeepActive + " min without input, while the VPN is up"));
 
             Console.WriteLine("  VPN password:  " + (HasSecret(Credentials.Vpn) ? "saved" : "MISSING (run vpn-keeper setup)"));
             Console.WriteLine("  TOTP seed:     " + TotpStatus());

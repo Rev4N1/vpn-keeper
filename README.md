@@ -165,6 +165,26 @@ Only traffic through the proxy counts, not the PC's own use of the VPN or the
 check URL. Started during the hours, it keeps the VPN up past the window's end
 for as long as it is used. `/health` and `vpn-keeper status` show it.
 
+### If the VPN drops when the PC is idle
+
+Some Connect Tunnel setups end the session after a while without keyboard or
+mouse input on the PC, even while the proxy is in use. `keep_active` (asked by
+`setup`, or set in `vpn-keeper.conf`) works around that:
+
+```
+keep_active = 25    # minutes; 0 = off (the default)
+```
+
+While the VPN is up, after that many minutes without input vpn-keeper presses
+**F15**, a key Windows knows but no keyboard has, so no app reacts to it. Keep
+it under the VPN's idle limit. Side effects: it also counts for Windows' own
+idle timer, so the screen does not lock or turn off by itself while the VPN is
+up (lock it by hand); and a locked PC takes no input, so it does nothing then
+(the log says so). Check that your organisation allows it.
+
+Editing `vpn-keeper.conf` by hand takes effect by itself: the agent restarts
+on the new settings within a minute.
+
 ## Build
 
 Every push runs [CI](.github/workflows/build.yml) on Windows: it compiles and
