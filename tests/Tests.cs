@@ -351,6 +351,13 @@ namespace VpnKeeper
                 Yes(Manual.Stop(), "ended");
                 No(Manual.Stop(), "nothing left to end");
 
+                // A damaged file is no session, even with proxy traffic.
+                Manual.Traffic();
+                File.WriteAllText(Manual.FilePath, "garbage");
+                Eq(Manual.State.Off, Manual.Check(DateTime.UtcNow), "damaged file: off");
+                No(File.Exists(Manual.FilePath), "damaged file removed");
+                Manual.Reset();
+
                 // The /connect page, with Credential Manager faked.
                 const string Seed = "JBSWY3DPEHPK3PXP";
                 Watchdog.ReadCredential = delegate(string target, out string user, out string secret)
@@ -532,7 +539,7 @@ namespace VpnKeeper
                 DateTime asked = DateTime.Now;
                 Watchdog.AwaitVpn();
                 Eq(VpnState.Up, Watchdog.Status.State, "proxy traffic: logged in again, request held until up");
-                Yes((DateTime.Now - asked).TotalSeconds < 90, "held only until up");
+                Yes((DateTime.Now - asked).TotalSeconds < 150, "held only until up");
                 stop = true;
                 loop.Join(150000);
 

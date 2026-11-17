@@ -140,7 +140,7 @@ traffic after the start counts.
   idle timeout drops it); a disconnected one stays down, and prompts are
   cancelled as outside the hours. Passes run every 5 s, so a proxy request
   wakes it within seconds; the proxy holds that request until the state is
-  `Connected` (90 s at most) instead of failing it.
+  `Connected` (2.5 min at most, a login's longest) instead of failing it.
 - **over** (none for 4 h, or `disconnect`): the file is removed, and the
   hours apply again.
 

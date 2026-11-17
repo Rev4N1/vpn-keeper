@@ -44,7 +44,7 @@ namespace VpnKeeper
         public static void AwaitVpn()
         {
             if (!manualWaking || Status.State == VpnState.Up) return;
-            DateTime until = DateTime.UtcNow.AddSeconds(90);
+            DateTime until = DateTime.UtcNow.AddSeconds(150);   // a login takes 2 min at most
             while (manualWaking && Status.State != VpnState.Up && DateTime.UtcNow < until) Thread.Sleep(500);
         }
 

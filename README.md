@@ -155,7 +155,7 @@ proxy's traffic:
   drops, as during the hours;
 - after 30 minutes without proxy traffic it is left alone, so the server's idle
   timeout can drop it, and it stays down. The **next request through the proxy
-  logs in again**; the proxy holds that request (up to 90 s) until the VPN is
+  logs in again**; the proxy holds that request (up to 2.5 min) until the VPN is
   up, so the page just loads a little slower;
 - after 4 hours without proxy traffic the manual connection ends, and outside
   the hours the VPN is disconnected. `vpn-keeper disconnect` (or *end* on

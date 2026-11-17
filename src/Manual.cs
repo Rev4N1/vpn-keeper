@@ -63,9 +63,14 @@ namespace VpnKeeper
             try { text = File.ReadAllText(FilePath).Trim(); }
             catch (IOException) { return null; }   // includes not found
             catch (UnauthorizedAccessException) { return null; }
-            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out ticks)) ticks = 0;
+            // A damaged file is no session: traffic alone must never start one.
+            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out ticks) || ticks <= 0 || ticks > DateTime.MaxValue.Ticks)
+            {
+                Stop();
+                return null;
+            }
             ticks = Math.Max(ticks, Interlocked.Read(ref lastTraffic));
-            return ticks <= 0 ? (DateTime?)null : new DateTime(ticks, DateTimeKind.Utc);
+            return new DateTime(ticks, DateTimeKind.Utc);
         }
 
         // The agent's view each pass: ends an expired session and remembers
